@@ -1,4 +1,6 @@
-import { realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { createTerminalSession, normalizeTerminalResize, resolveTerminalCwd } from '../terminal-service.js';
 
@@ -11,25 +13,37 @@ describe('terminal service', () => {
   });
 
   test('keeps terminal cwd inside the same allowed browse roots', () => {
-    const roots = ['/Users/home'];
-    expect(resolveTerminalCwd('/Users/home/projects/codex-webui', roots, '/Users/home/projects')).toBe(realpathSync('/Users/home/projects/codex-webui'));
-    expect(resolveTerminalCwd('/private/tmp', roots, '/Users/home/projects')).toBe(realpathSync('/Users/home/projects'));
-    expect(resolveTerminalCwd(null, roots, '/Users/home/projects')).toBe(realpathSync('/Users/home/projects'));
+    const fixture = mkdtempSync(join(tmpdir(), 'codex-webui-terminal-'));
+    const allowedRoot = join(fixture, 'home');
+    const project = join(allowedRoot, 'projects', 'codex-webui');
+    const fallback = join(allowedRoot, 'projects');
+    const outside = join(fixture, 'outside');
+    mkdirSync(project, { recursive: true });
+    mkdirSync(outside);
+    try {
+      expect(resolveTerminalCwd(project, [allowedRoot], fallback)).toBe(realpathSync(project));
+      expect(resolveTerminalCwd(outside, [allowedRoot], fallback)).toBe(realpathSync(fallback));
+      expect(resolveTerminalCwd(null, [allowedRoot], fallback)).toBe(realpathSync(fallback));
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   test('reports a missing PTY worker runtime without crashing the server', async () => {
     const previous = process.env.CODEX_WEBUI_NODE;
+    const cwd = mkdtempSync(join(tmpdir(), 'codex-webui-terminal-worker-'));
     process.env.CODEX_WEBUI_NODE = '/definitely/missing/codex-webui-node';
     try {
       const result = await new Promise(resolve => {
         const session = createTerminalSession({
-          cwd: realpathSync('/Users/home/projects'),
+          cwd,
           onData: () => {},
           onExit: event => { session.kill(); resolve(event); },
         });
       });
       expect(result.exitCode).toBe(1);
     } finally {
+      rmSync(cwd, { recursive: true, force: true });
       if (previous === undefined) delete process.env.CODEX_WEBUI_NODE;
       else process.env.CODEX_WEBUI_NODE = previous;
     }

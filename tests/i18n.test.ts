@@ -31,6 +31,7 @@ describe("WebUI i18n", () => {
     expect(translate("3 changed files", "zh-CN")).toBe("3 个文件已更改");
     expect(translate("Worked for 2m 8s", "zh-CN")).toBe("处理耗时 2m 8s");
     expect(translate("Custom (config.toml)", "zh-CN")).toBe("自定义（config.toml）");
+    expect(translate("Codex config", "zh-CN")).toBe("Codex 配置");
     expect(translate("Unrestricted access to the internet and any file on your computer", "zh-CN")).toBe("不受限制地访问互联网和此电脑上的任意文件");
     expect(translate("Choose project folder", "zh-CN")).toBe("选择项目文件夹");
     expect(translate("No side tasks", "zh-CN")).toBe("没有子任务");

@@ -256,6 +256,7 @@ Object.assign(ZH_CN, {
   "No patch details": "无补丁详情",
   "Plan mode": "规划模式",
   "Approve for me": "代我审批",
+  "Codex config": "Codex 配置",
   "Always ask for permission before editing external files or using the internet": "编辑工作区外的文件或使用互联网前始终请求许可",
   "Only ask for actions detected as potentially unsafe": "仅在检测到可能不安全的操作时请求许可",
   "Not allowed by managed settings": "受管理设置限制，无法使用",

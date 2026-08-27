@@ -66,8 +66,8 @@ Complete the Codex sign-in flow before starting this project.
 ```bash
 git clone https://github.com/lezi-fun/codex-webui.git
 cd codex-webui
-bun install
-bun run start
+bun ci
+HOST=127.0.0.1 bun run start
 ```
 
 Open:
@@ -76,7 +76,26 @@ Open:
 http://127.0.0.1:8899
 ```
 
-The default bind address is localhost. Use the folder button in the composer or sidebar to select the project Codex should work in.
+The default bind address is localhost. Keeping `HOST=127.0.0.1` explicit is recommended for a local pilot. Use the folder button in the composer or sidebar to select the project Codex should work in.
+
+### Test an existing repository or worktree
+
+Start Codex WebUI from its own checkout, then select your existing repository or Git worktree in the browser. You do not need to copy the WebUI into the project being tested.
+
+```bash
+cd /path/to/codex-webui
+bun ci
+HOST=127.0.0.1 CODEX_WEBUI_CWD=/path/to/existing/worktree bun run start
+```
+
+New sessions use the approval, sandbox, and network policy from your Codex `config.toml` by default. The permission picker can apply an explicit override for a new turn; leave it on **Codex config** to inherit your normal setup.
+
+The WebUI launches and owns its Codex app-server process and sessions. It can resume threads exposed by that app-server, but it does not attach to an arbitrary Codex process already running in another terminal.
+
+For a quick browser smoke test, open `http://127.0.0.1:8899`, select a disposable repository or worktree, start two separate chats, and send a harmless prompt in each. Confirm that responses and any approval card stay in the originating chat, then open Settings and verify that **Codex config** is selected. Stop the server with `Ctrl-C` when finished.
+
+> [!CAUTION]
+> A local browser page can still approve commands and file changes on your machine. Use a disposable worktree for the first test, read every approval, and do not expose the pilot listener beyond localhost.
 
 ### LAN password login
 
@@ -216,22 +235,42 @@ Run the portable unit suite:
 bun run test:unit
 ```
 
+Run the hermetic fake-app-server integration suite and the browser security regression suite:
+
+```bash
+bun run test:integration
+bun run test:security-e2e
+```
+
+Run the same deterministic suites used by Ubuntu CI:
+
+```bash
+bun run test:ci
+```
+
 Check both Bun and browser bundles:
 
 ```bash
 bun run check
 ```
 
-With a running server:
+The live integration test requires a working, authenticated Codex installation:
+
+```bash
+bun run test:live-integration
+```
+
+The live browser reconciliation test requires the WebUI to already be running at
+`http://127.0.0.1:8899` (or at `CODEX_WEBUI_TEST_URL`) with access to that authenticated Codex:
+
+```bash
+bun run test:live-e2e
+```
+
+The remaining browser and live-server checks are available separately:
 
 ```bash
 bun run test:browser
-```
-
-Tests that require a working, authenticated Codex installation:
-
-```bash
-bun run test:integration
 bun run test:e2e
 ```
 
