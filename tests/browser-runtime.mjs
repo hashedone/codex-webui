@@ -9,6 +9,9 @@ mkdirSync(artifacts, { recursive: true });
 export function launchOptions() {
   const candidates = [
     process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
     '/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary',
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   ];

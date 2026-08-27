@@ -1,5 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_TURN_PAGE_SIZE, applyComposerSuggestion, createLatestRequestGate, createTurnWindow, filterAppModels, getComposerAutocomplete, resolveComposerPlaceholder, selectModelState } from "../public/ui-core.js";
+import { DEFAULT_TURN_PAGE_SIZE, applyComposerSuggestion, createLatestRequestGate, createTurnWindow, filterAppModels, getComposerAutocomplete, resolveComposerPlaceholder, selectModelState, shouldHandleThreadMessage, shouldReconcileUserMessage } from "../public/ui-core.js";
+
+describe("thread-scoped messages", () => {
+  test("rejects item events and approval requests owned by another active thread", () => {
+    expect(shouldHandleThreadMessage("item/started", { threadId: "thread-beta" }, "thread-alpha")).toBe(false);
+    expect(shouldHandleThreadMessage("item/commandExecution/requestApproval", { threadId: "thread-beta" }, "thread-alpha")).toBe(false);
+    expect(shouldHandleThreadMessage("item/completed", { threadId: "thread-alpha" }, "thread-alpha")).toBe(true);
+    expect(shouldHandleThreadMessage("account/updated", {}, "thread-alpha")).toBe(true);
+  });
+});
+
+describe("user-message reconciliation", () => {
+  test("only reconciles the matching logical item across live and snapshot origins", () => {
+    const existing = { turnId: "turn-a", signature: '[{"type":"text","text":"same"}]', origins: ["live"] };
+    expect(shouldReconcileUserMessage(existing, { turnId: "turn-a", signature: existing.signature, origin: "snapshot" })).toBe(true);
+    expect(shouldReconcileUserMessage(existing, { turnId: "turn-b", signature: existing.signature, origin: "snapshot" })).toBe(false);
+    expect(shouldReconcileUserMessage(existing, { turnId: "turn-a", signature: existing.signature, origin: "live" })).toBe(false);
+  });
+});
 
 describe("conversation turn window", () => {
   test("uses a small default page for fast first paint", () => {

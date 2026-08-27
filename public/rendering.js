@@ -1,5 +1,6 @@
 import { marked } from "marked";
 import katex from "katex";
+import createDOMPurify from "dompurify";
 
 const escapeHtml = (value = "") => String(value).replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -217,25 +218,48 @@ function renderMath(source, protectedBlocks = []) {
   return { text, protectedBlocks };
 }
 
-function sanitizeHtml(html) {
-  if (typeof window !== "undefined" && globalThis.DOMPurify) {
-    return globalThis.DOMPurify.sanitize(html, { ADD_ATTR: ["target", "rel"], FORBID_TAGS: ["style", "script", "iframe", "object", "embed"] });
+function isSafeParsedUrl(value, attribute, baseUrl) {
+  const source = String(value || "").trim();
+  if (!source) return true;
+  if (attribute === "src" && SAFE_DATA_IMAGE.test(source)) return true;
+  try {
+    const url = new URL(source, baseUrl);
+    if (attribute === "href") return ["http:", "https:", "mailto:"].includes(url.protocol);
+    return ["http:", "https:", "blob:"].includes(url.protocol);
+  } catch {
+    return false;
   }
-  return html
-    .replace(/<(script|style|iframe|object|embed)\b[\s\S]*?<\/\1>/gi, (value) => escapeHtml(value))
-    .replace(/\s(?:on\w+|style)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/(?:href|src)\s*=\s*(["'])\s*javascript:[\s\S]*?\1/gi, "href=\"#\"");
 }
 
-export function renderAssistantMarkdown(source = "", { cwd = "" } = {}) {
+function sanitizeHtml(html, windowLike) {
+  if (!windowLike?.document) throw new Error("Secure Markdown rendering requires a browser DOM");
+  const purifier = createDOMPurify(windowLike);
+  if (!purifier?.isSupported || typeof purifier.sanitize !== "function") {
+    throw new Error("Secure Markdown rendering is unavailable");
+  }
+  const baseUrl = windowLike.location?.href || "https://codex-webui.invalid/";
+  purifier.addHook("afterSanitizeAttributes", (node) => {
+    for (const attribute of ["href", "src"]) {
+      if (node.hasAttribute?.(attribute) && !isSafeParsedUrl(node.getAttribute(attribute), attribute, baseUrl)) {
+        node.removeAttribute(attribute);
+      }
+    }
+  });
+  return purifier.sanitize(html, {
+    ADD_ATTR: ["target", "rel"],
+    FORBID_TAGS: ["style", "script", "iframe", "object", "embed"],
+  });
+}
+
+export function renderAssistantMarkdown(source = "", { cwd = "", window: windowLike = globalThis.window } = {}) {
   const protectedBlocks = [];
   const { text: protectedText } = renderMath(stripAgentInternalMarkup(source), protectedBlocks);
   const text = protectCodexFileCitations(protectedText, cwd, protectedBlocks);
   marked.setOptions({ gfm: true, breaks: true });
   let html = marked.parse(text, { async: false });
-  const localLinks = protectLocalProtocolLinks(html);
-  html = localLinks.restore(sanitizeHtml(localLinks.html)).replace(/javascript\s*:/gi, "");
   html = html.replace(/\u0000CODEX(\d+)\u0000/g, (_, index) => protectedBlocks[Number(index)] || "");
+  const localLinks = protectLocalProtocolLinks(html);
+  html = localLinks.restore(sanitizeHtml(localLinks.html, windowLike));
   return renderLinks(renderImages(html, cwd), cwd);
 }
 

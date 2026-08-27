@@ -55,9 +55,17 @@ const imageRoots = [...new Set([...browseRoots, resolve(tmpdir()), resolve("/tmp
 const fileRoots = [...new Set([...browseRoots, defaultCwd, resolve(tmpdir()), resolve("/tmp")])];
 const reviewRoots = [resolve(process.env.CODEX_WEBUI_REVIEW_ROOT || defaultCwd)];
 const clients = new Set<WebSocket>();
+type RequestId = string | number;
+type BrowserConnection = WebSocket | ServerResponse;
+type ThreadSubscription = { threadId: string | null; generation: number };
+type PendingCodexRequest = { message: any; recipients: ReadonlySet<BrowserConnection> };
+const clientThreads = new Map<WebSocket, ThreadSubscription>();
 const sseClients = new Set<ServerResponse>();
+const sseClientsById = new Map<string, ServerResponse>();
+const sseClientThreads = new Map<ServerResponse, ThreadSubscription>();
 const terminalSessions = new Map<WebSocket, ReturnType<typeof createTerminalSession>>();
 const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+const pendingCodexRequests = new Map<RequestId, PendingCodexRequest>();
 const reviewDiffs = new ReviewDiffStore();
 const liveSessions = new LiveSessionStore();
 const threadPaths = new Map<string, string>();
@@ -108,6 +116,7 @@ function startCodex() {
     broadcast({ type: "bridge/status", status: "disconnected", code, signal });
     for (const item of pending.values()) item.reject(new Error("Codex app-server exited"));
     pending.clear();
+    pendingCodexRequests.clear();
     if (codex === child) codex = null;
     if (shuttingDown) maybeFinishShutdown();
     else restartTimer = setTimeout(startCodex, 1000);
@@ -175,17 +184,25 @@ function handleCodex(message: any) {
     }
   }
   if (message.id !== undefined && message.method) {
-    broadcast({ type: "codex/request", payload: message });
+    const recipients = recipientsForCodexRequest(message.params?.threadId);
+    pendingCodexRequests.set(message.id, { message, recipients });
+    sendToRecipients(recipients, { type: "codex/request", payload: message });
     return;
   }
   if (message.method) {
+    if (message.method === "serverRequest/resolved") {
+      const resolved = pendingCodexRequests.get(message.params?.requestId);
+      pendingCodexRequests.delete(message.params?.requestId);
+      if (resolved) sendToRecipients(resolved.recipients, { type: "codex/notification", payload: message });
+      return;
+    }
     if (message.method === "account/updated") accountLoader.invalidate();
     if (message.method === "turn/diff/updated") reviewDiffs.record(message.params || {});
     if (message.method === "item/fileChange/patchUpdated") recordFileChangeDiff(message.params || {});
     if (message.method === "item/completed" && message.params?.item?.type === "fileChange") {
       recordFileChangeDiff({ ...message.params, changes: message.params.item.changes });
     }
-    broadcast({ type: "codex/notification", payload: message });
+    sendToThread(message.params?.threadId, { type: "codex/notification", payload: message });
   }
 }
 
@@ -234,12 +251,82 @@ function broadcast(data: any) {
   for (const client of sseClients) if (!client.writableEnded) client.write(`data: ${text}\n\n`);
 }
 
-async function dispatchBrowserMessage(message: any) {
+function sendToThread(threadId: unknown, data: any) {
+  if (typeof threadId !== "string" || !threadId) {
+    broadcast(data);
+    return;
+  }
+  const text = JSON.stringify(data);
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN && clientThreads.get(client)?.threadId === threadId) client.send(text);
+  }
+  for (const client of sseClients) {
+    if (!client.writableEnded && sseClientThreads.get(client)?.threadId === threadId) client.write(`data: ${text}\n\n`);
+  }
+}
+
+function sendToRecipients(recipients: ReadonlySet<BrowserConnection>, data: any) {
+  const text = JSON.stringify(data);
+  for (const client of recipients) {
+    if (typeof (client as WebSocket).send === "function") {
+      const websocket = client as WebSocket;
+      if (websocket.readyState === WebSocket.OPEN) websocket.send(text);
+    } else if (!client.writableEnded) {
+      (client as ServerResponse).write(`data: ${text}\n\n`);
+    }
+  }
+}
+
+function recipientsForCodexRequest(threadId: unknown): ReadonlySet<BrowserConnection> {
+  if (typeof threadId === "string" && threadId) {
+    return new Set<BrowserConnection>([
+      ...[...clients].filter(client => client.readyState === WebSocket.OPEN && clientThreads.get(client)?.threadId === threadId),
+      ...[...sseClients].filter(client => !client.writableEnded && sseClientThreads.get(client)?.threadId === threadId),
+    ]);
+  }
+  // Global requests have no thread owner. Designate exactly one live browser,
+  // preferring WebSocket over SSE, so the request is never broadcast-answerable.
+  const websocket = [...clients].find(client => client.readyState === WebSocket.OPEN);
+  if (websocket) return new Set([websocket]);
+  const sse = [...sseClients].find(client => !client.writableEnded);
+  return new Set(sse ? [sse] : []);
+}
+
+function updateSubscription(current: ThreadSubscription | undefined, threadId: unknown, generation: unknown): ThreadSubscription {
+  if (!Number.isSafeInteger(generation) || Number(generation) < 1) throw new Error("Invalid thread subscription generation");
+  if (threadId !== null && (typeof threadId !== "string" || !threadId)) throw new Error("Invalid thread subscription id");
+  if (current && Number(generation) <= current.generation) return current;
+  return { threadId: threadId as string | null, generation: Number(generation) };
+}
+
+function subscribeBrowserConnection(client: WebSocket | undefined, sseClient: ServerResponse | undefined, threadId: unknown, generation: unknown) {
+  if (client) {
+    const subscription = updateSubscription(clientThreads.get(client), threadId, generation);
+    clientThreads.set(client, subscription);
+    return subscription;
+  }
+  if (sseClient) {
+    const subscription = updateSubscription(sseClientThreads.get(sseClient), threadId, generation);
+    sseClientThreads.set(sseClient, subscription);
+    return subscription;
+  }
+  throw new Error("Thread subscription requires a browser connection");
+}
+
+function browserConnection(client?: WebSocket, sseClient?: ServerResponse): BrowserConnection | undefined {
+  return client || sseClient;
+}
+
+async function dispatchBrowserMessage(message: any, client?: WebSocket, sseClient?: ServerResponse) {
   const id = message?.id;
   if (message?.type === "rpc") {
     try {
       if (!isAllowedBrowserRpcMethod(message.method)) throw new Error("RPC method is not available to browser clients");
       const params = message.params || {};
+      if (message.method === "host/thread/subscribe") {
+        const result = subscribeBrowserConnection(client, sseClient, params.threadId ?? null, params.generation);
+        return { type: "rpc/result", id, result };
+      }
       const result = message.method === "host/thread/live"
         ? await readLiveThread(params.threadId)
         : await request(message.method, params);
@@ -251,12 +338,26 @@ async function dispatchBrowserMessage(message: any) {
     }
   }
   if (message?.type === "codex/response") {
-    if (!Number.isSafeInteger(message.requestId)) throw new Error("Invalid Codex request id");
+    if (!(typeof message.requestId === "string" && message.requestId) && !Number.isSafeInteger(message.requestId)) throw new Error("Invalid Codex request id");
+    const pendingRequest = pendingCodexRequests.get(message.requestId);
+    if (!pendingRequest) throw new Error("Codex approval is no longer pending");
+    const recipient = browserConnection(client, sseClient);
+    if (!recipient || !pendingRequest.recipients.has(recipient)) {
+      throw new Error("Browser is not the recipient of this Codex approval");
+    }
+    pendingCodexRequests.delete(message.requestId);
     sendRaw({ id: message.requestId, result: message.result });
     return { type: "ack" };
   }
   if (message?.type === "codex/error") {
-    if (!Number.isSafeInteger(message.requestId)) throw new Error("Invalid Codex request id");
+    if (!(typeof message.requestId === "string" && message.requestId) && !Number.isSafeInteger(message.requestId)) throw new Error("Invalid Codex request id");
+    const pendingRequest = pendingCodexRequests.get(message.requestId);
+    if (!pendingRequest) throw new Error("Codex approval is no longer pending");
+    const recipient = browserConnection(client, sseClient);
+    if (!recipient || !pendingRequest.recipients.has(recipient)) {
+      throw new Error("Browser is not the recipient of this Codex approval");
+    }
+    pendingCodexRequests.delete(message.requestId);
     sendRaw({ id: message.requestId, error: message.error });
     return { type: "ack" };
   }
@@ -265,7 +366,7 @@ async function dispatchBrowserMessage(message: any) {
 }
 
 async function handleClient(client: WebSocket, message: any) {
-  try { client.send(JSON.stringify(await dispatchBrowserMessage(message))); }
+  try { client.send(JSON.stringify(await dispatchBrowserMessage(message, client))); }
   catch (error) { client.send(JSON.stringify(rpcErrorPayload(message?.id, error))); }
 }
 
@@ -465,8 +566,14 @@ const server = createServer(async (req, res) => {
     res.flushHeaders?.();
     res.write("retry: 1000\n\n");
     sseClients.add(res);
+    const clientId = url.searchParams.get("clientId");
+    if (clientId && /^[A-Za-z0-9_-]{1,128}$/.test(clientId)) sseClientsById.set(clientId, res);
     res.write(`data: ${JSON.stringify({ type: "bridge/status", status: connected ? "connected" : "connecting" })}\n\n`);
-    req.on("close", () => sseClients.delete(res));
+    req.on("close", () => {
+      sseClients.delete(res);
+      sseClientThreads.delete(res);
+      if (clientId && sseClientsById.get(clientId) === res) sseClientsById.delete(clientId);
+    });
     return;
   }
   if (url.pathname === "/api/rpc" || url.pathname === "/api/codex/respond") {
@@ -477,10 +584,11 @@ const server = createServer(async (req, res) => {
     }
     try {
       const payload = await readJsonBody(req);
+      const sseClient = typeof payload.clientId === "string" ? sseClientsById.get(payload.clientId) : undefined;
       const message = url.pathname === "/api/rpc"
         ? { type: "rpc", id: payload.id, method: payload.method, params: payload.params || {} }
         : { type: payload.error ? "codex/error" : "codex/response", requestId: payload.requestId, result: payload.result, error: payload.error };
-      const reply = await dispatchBrowserMessage(message);
+      const reply = await dispatchBrowserMessage(message, undefined, sseClient);
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
       res.end(JSON.stringify(reply));
     } catch (error) {
@@ -734,7 +842,10 @@ wss.on("connection", (client) => {
     try { handleClient(client, JSON.parse(String(raw))); }
     catch (error) { client.send(JSON.stringify({ type: "rpc/error", error: String(error) })); }
   });
-  client.on("close", () => clients.delete(client));
+  client.on("close", () => {
+    clients.delete(client);
+    clientThreads.delete(client);
+  });
 });
 terminalWss.on("connection", (client, req) => {
   let terminal: ReturnType<typeof createTerminalSession> | null = null;

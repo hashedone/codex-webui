@@ -1,5 +1,16 @@
 export const DEFAULT_TURN_PAGE_SIZE = 20;
 
+export function shouldHandleThreadMessage(method, params, activeThreadId) {
+  if (!String(method || "").startsWith("item/") && !String(method || "").startsWith("turn/")) return true;
+  return typeof params?.threadId === "string" && params.threadId === activeThreadId;
+}
+
+export function shouldReconcileUserMessage(existing, incoming) {
+  return existing?.turnId === incoming?.turnId
+    && existing?.signature === incoming?.signature
+    && !new Set(existing?.origins || []).has(incoming?.origin);
+}
+
 export function createLatestRequestGate() {
   let generation = 0;
   return {
