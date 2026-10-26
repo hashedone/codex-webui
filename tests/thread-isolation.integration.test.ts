@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import WebSocket from "ws";
+import { Database } from "bun:sqlite";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const AUTHORIZATION = `Basic ${Buffer.from("codex:thread-isolation-token").toString("base64")}`;
@@ -141,6 +142,17 @@ beforeAll(async () => {
   const executable = join(fakeBinDir, "codex");
   writeFileSync(executable, `#!/bin/sh\nexec ${JSON.stringify(globalThis.process.env.BUN_INSTALL ? join(globalThis.process.env.BUN_INSTALL, "bin", "bun") : "bun")} ${JSON.stringify(join(ROOT, "tests", "fixtures", "fake-codex-app-server.ts"))} "$@"\n`);
   chmodSync(executable, 0o755);
+  const stateDb = join(fakeBinDir, "state_5.sqlite");
+  const historyDb = join(fakeBinDir, "thread_history_1.sqlite");
+  const state = new Database(stateDb);
+  state.run("CREATE TABLE threads (id TEXT PRIMARY KEY,title TEXT NOT NULL,name TEXT,agent_nickname TEXT,agent_role TEXT,agent_path TEXT,cwd TEXT NOT NULL,updated_at_ms INTEGER,archived INTEGER NOT NULL,source TEXT NOT NULL)");
+  state.run("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL,child_thread_id TEXT PRIMARY KEY,status TEXT NOT NULL)");
+  state.query("INSERT INTO threads VALUES ('desktop-root','Desktop root',NULL,NULL,NULL,NULL,'/tmp/project',?,0,'vscode')").run(Date.now());
+  state.close();
+  const history = new Database(historyDb);
+  history.run("CREATE TABLE thread_turns (thread_id TEXT NOT NULL,turn_id TEXT NOT NULL,rollout_ordinal INTEGER NOT NULL,status TEXT NOT NULL,started_at INTEGER,completed_at INTEGER,PRIMARY KEY(thread_id,turn_id))");
+  history.query("INSERT INTO thread_turns VALUES ('desktop-root','turn-local',1,'inProgress',?,NULL)").run(Math.floor(Date.now() / 1000));
+  history.close();
   serverProcess = Bun.spawn({
     cmd: ["bun", "run", "server.ts"],
     cwd: ROOT,
@@ -151,6 +163,8 @@ beforeAll(async () => {
       HOST: "127.0.0.1",
       CODEX_WEBUI_PASSWORD: "",
       CODEX_WEBUI_ACCESS_TOKEN: "thread-isolation-token",
+      CODEX_WEBUI_STATE_DB: stateDb,
+      CODEX_WEBUI_THREAD_HISTORY_DB: historyDb,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -349,8 +363,9 @@ test("command center summaries do not subscribe to thread events or approvals (W
   try {
     await sseObserver.connect();
     const overview = await observer.rpc("host/agents/list");
-    expect(overview.scope).toBe("dashboard-app-server");
-    expect(overview.tasks.map(task => task.id).sort()).toEqual(["thread-alpha", "thread-beta"]);
+    expect(overview.scope).toBe("presence-hub");
+    expect(overview.tasks.map(task => task.id).sort()).toEqual(["codex-local:desktop-root", "webui:thread-alpha", "webui:thread-beta"]);
+    expect(overview.sources.map(source => source.id)).toEqual(["webui", "codex-local"]);
     expect(overview.stale).toBe(false);
     const httpOverview = await sseObserver.rpc("host/agents/list");
     expect(httpOverview.tasks).toEqual(overview.tasks);

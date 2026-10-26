@@ -10,12 +10,16 @@ export async function readTaskForOpen(rpc, threadId) {
 const kindLabels = { root: 'Root task', delegated: 'Delegated task', internal: 'Internal agent', descendant: 'Descendant · input unknown' };
 export function statusLabel(task) {
   if (task.status === 'active') {
-    if (task.activeFlags.includes('waitingOnApproval')) return 'Awaiting approval';
-    if (task.activeFlags.includes('waitingOnUserInput')) return 'Awaiting input';
+    const activeFlags = task.activeFlags || [];
+    if (activeFlags.includes('waitingOnApproval')) return 'Awaiting approval';
+    if (activeFlags.includes('waitingOnUserInput')) return 'Awaiting input';
     return 'Working';
   }
-  return { idle: 'Idle', notLoaded: 'Not loaded', systemError: 'System error', unknown: 'Unknown' }[task.status] || 'Unknown';
+  return { completed: 'Completed', failed: 'Failed', interrupted: 'Interrupted', idle: 'Idle', notLoaded: 'Not loaded', systemError: 'System error', unknown: 'Unknown' }[task.status] || 'Unknown';
 }
+const defaultSource = { id: 'webui', label: 'WebUI', kind: 'app-server', monitorOnly: false };
+const taskSource = task => task.source && typeof task.source === 'object' ? { ...defaultSource, ...task.source } : defaultSource;
+const sourceHealthLabel = source => source.stale ? 'Stale' : !source.connected ? 'Unavailable' : 'Live';
 export function orderedTasks(tasks) {
   const byId = new Map(tasks.map(task => [task.id, task]));
   const children = new Map();
@@ -46,17 +50,29 @@ export function createCommandCenter({ rpc, openThread, isConnected, onShow = () 
   const panel = document.querySelector('#agentCommandCenter');
   const list = panel.querySelector('.cc-tasks');
   const health = panel.querySelector('.cc-health');
+  const sources = panel.querySelector('.cc-sources');
   const search = panel.querySelector('input');
   const filter = panel.querySelector('select');
   let visible = false, timer = null, inFlight = false, snapshot = null, error = '', generation = 0;
   function render() {
-    const stale = !navigator.onLine || !isConnected() || snapshot?.stale || !!error;
+    const disconnected = !navigator.onLine || !isConnected();
+    const stale = disconnected || snapshot?.stale || !!error;
     health.dataset.stale = String(stale);
-    health.textContent = error || (!navigator.onLine || !isConnected() ? 'Disconnected · last known data' : snapshot?.error ? `Overview unavailable · ${snapshot.error}` : !snapshot ? 'Discovering tasks…' : stale ? 'Waiting for a fresh inventory' : `Live · checked ${new Date(snapshot.refreshedAt).toLocaleTimeString()}`);
+    health.textContent = error || (disconnected ? 'Disconnected · last known data' : snapshot?.error ? `Presence partially unavailable · ${snapshot.error}` : !snapshot ? 'Discovering tasks…' : stale ? `Last known presence · checked ${new Date(snapshot.refreshedAt).toLocaleTimeString()}` : `Live · checked ${new Date(snapshot.refreshedAt).toLocaleTimeString()}`);
     const tasks = snapshot?.tasks || [];
-    panel.querySelector('.cc-counts').textContent = `${tasks.filter(t => t.status === 'active').length} active  /  ${tasks.filter(t => t.kind === 'root').length} roots  /  ${tasks.filter(t => t.kind !== 'root').length} descendants`;
+    const snapshotSources = snapshot?.sources || (snapshot ? [{ ...defaultSource, connected: snapshot.connected !== false, stale: !!snapshot.stale, refreshedAt: snapshot.refreshedAt, error: snapshot.error }] : []);
+    const sourceById = new Map(snapshotSources.map(source => [source.id, source]));
+    sources.replaceChildren();
+    for (const source of snapshotSources) {
+      const item = node('div', 'cc-source');
+      item.dataset.health = source.stale ? 'stale' : !source.connected ? 'unavailable' : 'live';
+      item.append(node('span', 'cc-source-dot'), node('strong', '', source.label || source.id), node('span', '', sourceHealthLabel(source)));
+      if (source.error) { const detail = node('small', '', source.error); detail.title = source.error; item.append(detail); }
+      sources.append(item);
+    }
+    panel.querySelector('.cc-counts').textContent = `${tasks.filter(t => t.status === 'active').length} working  /  ${tasks.filter(t => t.kind === 'root').length} roots  /  ${tasks.filter(t => t.kind !== 'root').length} descendants`;
     const query = search.value.trim().toLowerCase();
-    const matches = task => (!query || [task.title, task.id, task.cwd, task.role, task.agentPath].join(' ').toLowerCase().includes(query)) && (filter.value === 'all' || (filter.value === 'active' ? task.status === 'active' : task.kind !== 'root'));
+    const matches = task => (!query || [task.title, task.id, task.localId, task.cwd, task.role, task.agentPath, taskSource(task).label].join(' ').toLowerCase().includes(query)) && (filter.value === 'all' || (filter.value === 'active' ? task.status === 'active' : task.kind !== 'root'));
     const included = new Set(tasks.filter(matches).map(task => task.id));
     const byId = new Map(tasks.map(task => [task.id, task]));
     // Retain ancestors as context when filtering to a working descendant.
@@ -69,33 +85,41 @@ export function createCommandCenter({ rpc, openThread, isConnected, onShow = () 
     for (const { task, depth } of orderedTasks(tasks)) {
       if (!included.has(task.id)) continue;
       const row = node('article', 'cc-task'); row.dataset.taskId = task.id;
+      const source = taskSource(task); const sourceHealth = sourceById.get(task.sourceId || source.id);
+      row.dataset.sourceId = task.sourceId || source.id; row.dataset.monitorOnly = String(!!source.monitorOnly);
       row.style.setProperty('--depth', Math.min(depth, 6));
       const identity = node('div', 'cc-identity');
-      const eyebrow = node('div', 'cc-kind', `${depth ? '↳ ' : ''}${kindLabels[task.kind] || 'Task'}${task.role ? ` · ${task.role}` : ''}`);
+      const eyebrow = node('div', 'cc-kind', `${depth ? '↳ ' : ''}${source.label} · ${kindLabels[task.kind] || 'Task'}${task.role ? ` · ${task.role}` : ''}`);
       const title = node('h2', '', task.title); title.title = task.id;
       const path = node('div', 'cc-path', task.cwd || 'Workspace not reported'); path.title = task.cwd;
       identity.append(eyebrow, title, path);
       if (task.parentId) identity.append(node('div', 'cc-parent', `Parent: ${byId.get(task.parentId)?.title || task.parentId}${byId.has(task.parentId) ? '' : ' (outside inventory)'}`));
-      const state = node('div', 'cc-state'); const badge = node('span', 'cc-badge', statusLabel(task)); badge.dataset.status = stale ? 'unknown' : task.status;
-      state.append(badge, node('small', '', task.canAcceptDirectInput === true ? 'Direct input available' : task.canAcceptDirectInput === false ? 'Read only · agent controlled' : 'Input capability unknown'));
+      const state = node('div', 'cc-state'); const badge = node('span', 'cc-badge', statusLabel(task)); badge.dataset.status = task.status || 'unknown';
+      state.append(badge, node('small', '', source.monitorOnly ? `Monitor only${sourceHealth?.stale ? ' · stale source' : ''}` : task.canAcceptDirectInput === true ? 'Direct input available' : task.canAcceptDirectInput === false ? 'Read only · agent controlled' : 'Input capability unknown'));
       const activity = node('div', 'cc-activity', task.lastActivity?.label || 'Activity not reported');
       const at = task.lastActivity?.at;
       const time = node('time', '', Number.isFinite(at) ? new Date(at).toLocaleString() : 'Time not reported');
       if (Number.isFinite(at)) time.dateTime = new Date(at).toISOString(); activity.append(time);
-      const button = node('button', 'cc-open', 'Open task'); button.type = 'button'; button.dataset.taskId = task.id;
-      button.setAttribute('aria-label', `Open task: ${task.title}`);
-      button.onclick = async () => {
-        button.disabled = true;
-        try {
-          const opened = await openThread(task.id, { id: task.id, name: task.title, cwd: task.cwd });
-          if (opened) show(false);
-          else { error = 'Could not open task. The overview remains available; try again.'; render(); }
-        } catch (reason) { error = reason.message; render(); }
-        finally { button.disabled = false; }
-      };
-      row.append(identity, state, activity, button); list.append(row);
+      let action;
+      if (source.monitorOnly) {
+        action = node('span', 'cc-monitor-only', 'Monitor only');
+        action.setAttribute('aria-label', `${task.title} is monitor only`);
+      } else {
+        action = node('button', 'cc-open', 'Open task'); action.type = 'button'; action.dataset.taskId = task.id;
+        action.setAttribute('aria-label', `Open task: ${task.title}`);
+        action.onclick = async () => {
+          action.disabled = true;
+          try {
+            const opened = await openThread(task.localId || task.id, { id: task.localId || task.id, name: task.title, cwd: task.cwd });
+            if (opened) show(false);
+            else { error = 'Could not open task. The overview remains available; try again.'; render(); }
+          } catch (reason) { error = reason.message; render(); }
+          finally { action.disabled = false; }
+        };
+      }
+      row.append(identity, state, activity, action); list.append(row);
     }
-    if (!list.children.length) list.append(node('p', 'cc-empty', !snapshot || stale ? 'Task inventory is not available yet. Retry after the connection recovers.' : tasks.length ? 'No tasks match these filters.' : 'No tasks loaded on this dashboard’s app-server. Start a new chat here to begin; Desktop and other Codex processes are outside this view.'));
+    if (!list.children.length) list.append(node('p', 'cc-empty', !snapshot || disconnected ? 'Task inventory is not available yet. Retry after the connection recovers.' : tasks.length ? 'No tasks match these filters.' : 'No agents reported by the connected presence sources.'));
     if (focusId) [...list.querySelectorAll('button')].find(button => button.dataset.taskId === focusId)?.focus({ preventScroll: true });
   }
   async function refresh() {
