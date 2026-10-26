@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { JSDOM } from 'jsdom';
 import { AgentOverview, summarizeThread } from '../agent-overview.js';
-import { orderedTasks, statusLabel, readTaskForOpen } from '../public/agent-command-center.js';
+import { createCommandCenter, orderedTasks, statusLabel, readTaskForOpen } from '../public/agent-command-center.js';
 const thread = (id, overrides = {}) => ({ id, name: id, cwd: '/tmp/project', updatedAt: 10, status: { type: 'idle' }, canAcceptDirectInput: true, ...overrides });
 function fixture() {
   let now = 20000;
@@ -98,6 +99,23 @@ describe('agent inventory contract', () => {
     expect(ordered.find(r => r.task.id === 'grandchild').depth).toBe(2);
     expect(ordered.find(r => r.task.id === 'orphan').depth).toBe(0);
   });
+  test('renders projected Desktop turn states exactly instead of inferring completion from idle', () => {
+    expect(statusLabel({ status: 'active' })).toBe('Working');
+    expect(statusLabel({ status: 'completed' })).toBe('Completed');
+    expect(statusLabel({ status: 'failed' })).toBe('Failed');
+    expect(statusLabel({ status: 'interrupted' })).toBe('Interrupted');
+    expect(statusLabel({ status: 'unknown' })).toBe('Unknown');
+  });
+  test('keeps source-qualified duplicate local ids as separate hierarchy roots', () => {
+    const rows = [
+      thread('webui:same', { localId: 'same', sourceId: 'webui' }),
+      thread('codex-local:same', { localId: 'same', sourceId: 'codex-local' }),
+      thread('codex-local:child', { localId: 'child', sourceId: 'codex-local', parentId: 'codex-local:same' }),
+    ];
+    const ordered = orderedTasks(rows);
+    expect(ordered.map(row => row.task.id)).toEqual(['codex-local:same', 'codex-local:child', 'webui:same']);
+    expect(ordered.find(row => row.task.id === 'codex-local:child')?.depth).toBe(1);
+  });
 });
 
 
@@ -136,4 +154,30 @@ test('retains paginated unloaded descendants but excludes unrelated stored tasks
   const result = await overview.read(true);
   expect(result.tasks.map(t => t.id)).toEqual(['root', 'child', 'grandchild']);
   expect(result.tasks[2].status).toBe('notLoaded');
+});
+
+test('renders source health and cannot open a monitor-only Desktop row', async () => {
+  const dom = new JSDOM(`<!doctype html><body><button id="showCommandCenter"></button><section id="agentCommandCenter" hidden><h1></h1><div class="cc-health"></div><div class="cc-sources"></div><p class="cc-counts"></p><input><select><option value="all">All</option></select><button class="cc-refresh"></button><div class="cc-tasks"></div></section></body>`, { url: 'http://localhost/?view=agents' });
+  const previous = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, location: globalThis.location, history: globalThis.history };
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, navigator: dom.window.navigator, location: dom.window.location, history: dom.window.history });
+  let opens = 0; const calls: string[] = [];
+  try {
+    const task = { id: 'codex-local:same', localId: 'same', sourceId: 'codex-local', parentId: null, title: 'Desktop task', cwd: '/work', kind: 'root', status: 'active', activeFlags: [], canAcceptDirectInput: false, source: { id: 'codex-local', label: 'Codex Desktop / local', kind: 'local', monitorOnly: true }, lastActivity: { at: 10, label: 'Turn in progress' } };
+    const center = createCommandCenter({
+      isConnected: () => true,
+      openThread: async () => { opens++; return true; },
+      rpc: async method => { calls.push(method); return { scope: 'presence-hub', connected: true, stale: false, refreshedAt: 20, error: null, sources: [{ id: 'webui', label: 'Codex WebUI', connected: true, stale: false }, { id: 'codex-local', label: 'Codex Desktop / local', connected: false, stale: true, error: 'temporarily locked' }], tasks: [task] }; },
+    });
+    center.show(true); await Bun.sleep(5);
+    const row = document.querySelector<HTMLElement>('[data-task-id="codex-local:same"]')!;
+    row.click();
+    expect(row.dataset.monitorOnly).toBe('true');
+    expect(row.querySelector('button')).toBeNull();
+    expect(row.textContent).toContain('Working');
+    expect(document.querySelector('.cc-source[data-health="stale"]')?.textContent).toContain('Codex Desktop / local');
+    expect(opens).toBe(0); expect(calls).toEqual(['host/agents/list']);
+    center.show(false);
+  } finally {
+    dom.window.close(); Object.assign(globalThis, previous);
+  }
 });

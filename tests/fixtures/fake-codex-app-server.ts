@@ -15,6 +15,7 @@ function send(message: any) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+let loadedInventoryReads = 0;
 createInterface({ input: process.stdin }).on("line", line => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
@@ -23,7 +24,9 @@ createInterface({ input: process.stdin }).on("line", line => {
   }
   if (message.method === "initialized") return;
   if (message.method === "thread/loaded/list") {
-    send({ id: message.id, result: { data: [...threads.keys()], nextCursor: null } }); return;
+    loadedInventoryReads++;
+    const emptyFirstInventory = process.env.CODEX_WEBUI_TEST_EMPTY_AGENT_INVENTORY_ONCE === "1" && loadedInventoryReads === 1;
+    send({ id: message.id, result: { data: emptyFirstInventory ? [] : [...threads.keys()], nextCursor: null } }); return;
   }
   if (message.method === "thread/list") {
     const all = [...threads.values()] as any[];

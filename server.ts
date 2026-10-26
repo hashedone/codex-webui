@@ -15,6 +15,8 @@ import { searchWorkspaceFiles } from "./file-search.js";
 import { resolveLocalFile } from "./file-service.js";
 import { resolveLocalImage } from "./image-service.js";
 import { AgentOverview } from "./agent-overview.js";
+import { LocalCodexPresence } from "./local-presence.js";
+import { PresenceHub } from "./presence-hub.js";
 import { LiveSessionStore } from "./live-session-service.js";
 import {
   createPasswordSession,
@@ -70,6 +72,14 @@ const pendingCodexRequests = new Map<RequestId, PendingCodexRequest>();
 const reviewDiffs = new ReviewDiffStore();
 const liveSessions = new LiveSessionStore();
 const agentOverview = new AgentOverview(request);
+const initialCodexHome = resolve(process.env.CODEX_HOME || join(homeDir, ".codex"));
+const configuredStateDb = process.env.CODEX_WEBUI_STATE_DB;
+const configuredThreadHistoryDb = process.env.CODEX_WEBUI_THREAD_HISTORY_DB;
+const localPresence = new LocalCodexPresence({
+  statePath: resolve(configuredStateDb || join(initialCodexHome, "state_5.sqlite")),
+  historyPath: resolve(configuredThreadHistoryDb || join(initialCodexHome, "thread_history_1.sqlite")),
+});
+const presenceHub = new PresenceHub({ webui: agentOverview, local: localPresence });
 const threadPaths = new Map<string, string>();
 let codexSessionsRoot = resolve(homeDir, ".codex", "sessions");
 let seq = 1;
@@ -171,7 +181,14 @@ async function initialize() {
     capabilities: { experimentalApi: true },
   });
   sendRaw({ method: "initialized", params: {} });
-  if (typeof result?.codexHome === "string") codexSessionsRoot = resolve(result.codexHome, "sessions");
+  if (typeof result?.codexHome === "string") {
+    const codexHome = resolve(result.codexHome);
+    codexSessionsRoot = resolve(codexHome, "sessions");
+    localPresence.setPaths(
+      resolve(configuredStateDb || join(codexHome, "state_5.sqlite")),
+      resolve(configuredThreadHistoryDb || join(codexHome, "thread_history_1.sqlite")),
+    );
+  }
   connected = true;
   broadcast({ type: "bridge/status", status: "connected", info: result });
 }
@@ -332,7 +349,7 @@ async function dispatchBrowserMessage(message: any, client?: WebSocket, sseClien
         return { type: "rpc/result", id, result };
       }
       if (message.method === "host/agents/list") {
-        return { type: "rpc/result", id, result: await agentOverview.read(connected) };
+        return { type: "rpc/result", id, result: await presenceHub.read(connected) };
       }
       const result = message.method === "host/thread/live"
         ? await readLiveThread(params.threadId)
@@ -606,7 +623,10 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === "/api/health") {
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-    res.end(JSON.stringify({ ok: true, codex: connected, version: "0.2.0" }));
+    const local = localPresence.snapshot();
+    res.end(JSON.stringify({ ok: true, codex: connected, version: "0.2.0", presence: {
+      local: { connected: local.connected, stale: local.stale, refreshedAt: local.refreshedAt, error: local.error },
+    } }));
     return;
   }
   if (url.pathname === "/api/config") {
