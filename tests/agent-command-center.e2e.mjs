@@ -40,7 +40,10 @@ try {
   await page.locator('#prompt').fill('must not start an internal turn');
   await page.locator('#composer').evaluate(form => form.requestSubmit());
   assert.match(await page.locator('#toast').innerText(), /controlled by its parent/);
-  await page.locator('#showCommandCenter').click();
+  // Re-enter through the documented route. The sidebar may be collapsed after opening a task,
+  // and this flow must not make the test depend on viewport-specific sidebar visibility.
+  await page.goto(`${base}/?view=agents`);
+  await page.waitForFunction(() => document.querySelectorAll('.cc-task').length === 4);
   // Observe an event on a different root without changing the conversation subscription.
   await page.evaluate(async () => fetch('/api/rpc', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 80, method: 'turn/start', params: { threadId: 'thread-alpha', input: [{ type: 'text', text: 'fixture update' }] } }) }));
   await page.waitForFunction(() => document.querySelector('.cc-task[data-task-id="thread-alpha"] .cc-badge')?.textContent === 'Awaiting approval');
