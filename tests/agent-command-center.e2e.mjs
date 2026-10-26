@@ -50,7 +50,9 @@ try {
   assert.equal(await page.locator('.approval-card').count(), 0);
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await mobile.goto(base);
+  await mobile.waitForFunction(() => document.querySelector('#statusText')?.textContent === 'Codex connected');
   await mobile.locator('#toggleSidebar').click();
+  await mobile.locator('#showCommandCenter').waitFor({ state: 'visible' });
   await mobile.locator('#showCommandCenter').click();
   await mobile.waitForFunction(() => document.querySelectorAll('.cc-task').length === 4);
   await mobile.screenshot({ path: artifact('agent-command-center-mobile.png'), fullPage: true, animations: 'disabled' });
