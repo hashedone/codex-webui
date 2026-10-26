@@ -5,6 +5,12 @@ const threads = new Map([
   ["thread-beta", { id: "thread-beta", name: "Beta", cwd: process.cwd(), source: "local", turns: [] }],
 ]);
 
+if (process.env.CODEX_WEBUI_TEST_AGENTS === "1") {
+  threads.set("thread-alpha", { id: "thread-alpha", name: "Alpha root", cwd: process.cwd(), source: "appServer", turns: [], status: { type: "active", activeFlags: [] }, updatedAt: 1700000000, canAcceptDirectInput: true } as any);
+  threads.set("thread-child", { id: "thread-child", name: "Review delegated task", cwd: process.cwd(), source: "appServer", turns: [], parentThreadId: "thread-alpha", status: { type: "active", activeFlags: ["waitingOnApproval"] }, updatedAt: 1700000001, canAcceptDirectInput: true } as any);
+  threads.set("thread-internal", { id: "thread-internal", name: "<img src=x onerror=alert(1)> Internal checker", cwd: process.cwd(), source: { subAgent: { thread_spawn: { parent_thread_id: "thread-child" } } }, turns: [], parentThreadId: "thread-child", status: { type: "idle" }, updatedAt: 1700000002, canAcceptDirectInput: false } as any);
+}
+
 function send(message: any) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
@@ -16,12 +22,27 @@ createInterface({ input: process.stdin }).on("line", line => {
     return;
   }
   if (message.method === "initialized") return;
+  if (message.method === "thread/loaded/list") {
+    send({ id: message.id, result: { data: [...threads.keys()], nextCursor: null } }); return;
+  }
+  if (message.method === "thread/list") {
+    const all = [...threads.values()] as any[];
+    send({ id: message.id, result: { data: message.params.ancestorThreadId ? all.filter(t => t.parentThreadId && (message.params.ancestorThreadId === "thread-alpha" || t.parentThreadId === message.params.ancestorThreadId)) : all.filter(t => !t.parentThreadId), nextCursor: null } }); return;
+  }
   if (message.method === "thread/read") {
+    if (process.env.CODEX_WEBUI_TEST_AGENTS === "1" && message.params.threadId === "thread-internal" && message.params.includeTurns) {
+      send({ id: message.id, error: { code: -32600, message: "list_turns is not supported yet" } }); return;
+    }
     send({ id: message.id, result: { thread: threads.get(message.params.threadId) } });
     return;
   }
   if (message.method === "turn/start") {
     const { threadId } = message.params;
+    if (process.env.CODEX_WEBUI_TEST_AGENTS === "1") {
+      const target = threads.get(threadId) as any;
+      if (target) target.status = { type: "active", activeFlags: ["waitingOnApproval"] };
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "active", activeFlags: ["waitingOnApproval"] } } });
+    }
     const prompt = message.params.input?.map((item: any) => item?.text || "").join(" ") || "";
     send({ id: message.id, result: { turn: { id: `turn-${threadId}`, status: "inProgress", items: [] } } });
     send({ method: "item/started", params: { threadId, turnId: `turn-${threadId}`, item: { id: `command-${threadId}`, type: "commandExecution", command: "printf safe", status: "inProgress" } } });
