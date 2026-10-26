@@ -745,3 +745,42 @@ body.sidebar-hidden .sidebar>div{opacity:0}
 .shortcut-row kbd{padding:3px 6px;border:1px solid var(--app-border-default);border-radius:5px;background:var(--app-fog);color:var(--app-text-secondary);font:10px var(--mono)}
 @media(max-width:720px){.settings-dialog{inset:46px 0 0;height:calc(100dvh - 46px)}.settings-card{grid-template-columns:minmax(176px,42vw) minmax(0,1fr)}.settings-nav{padding-inline:8px}.settings-page{padding:28px 20px 36px}}
 @media(max-width:480px){.settings-card{display:block}.settings-nav,.settings-content{height:100%}.settings-nav{border-right:0;padding-inline:12px}.settings-nav-toolbar-spacer{height:10px;flex-basis:10px}.settings-content{display:none}.settings-dialog[data-mobile-page="true"] .settings-nav{display:none}.settings-dialog[data-mobile-page="true"] .settings-content{display:block}.settings-dialog[data-mobile-page="true"] .settings-mobile-back{display:inline-grid!important}.settings-page{width:100%;padding:24px 20px 36px}.settings-page-heading{margin-bottom:22px}.settings-row:not(.settings-toggle-row)>span:last-child{max-width:52%}}
+
+/* Agent command center: a compact operational ledger using the existing theme. */
+.command-center[hidden]{display:none}
+.command-center-open .conversation-shell>.conversation,.command-center-open .composer-dock{display:none}
+.command-center{overflow:auto;padding:32px clamp(16px,3vw,48px);height:100%;color:var(--text,#ddd)}
+.cc-heading{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.cc-overline{font:11px ui-monospace,monospace;letter-spacing:.14em;opacity:.65;margin:0 0 10px}
+.cc-heading h1{font-size:28px;font-weight:600;letter-spacing:-.04em;margin:0}
+.cc-scope{font-size:13px;line-height:1.65;max-width:880px;padding:16px 0;border-bottom:1px solid var(--border,#444);opacity:.85}
+.cc-health{font:12px ui-monospace,monospace;color:#65bfa0;padding:4px 0 12px;overflow-wrap:anywhere}
+.cc-health[data-stale=true]{color:#d6a55d}
+.cc-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0 24px}
+.cc-counts{margin:0 auto 0 0;font:12px ui-monospace,monospace}
+.cc-toolbar input,.cc-toolbar select,.cc-refresh,.cc-open{font:inherit;color:inherit;background:transparent;border:1px solid var(--border,#555);border-radius:6px;padding:8px 10px}
+.cc-toolbar input{max-width:240px;width:100%}
+.cc-toolbar select{background:var(--bg,#202020)}
+.cc-refresh,.cc-open{cursor:pointer;font-size:12px;white-space:nowrap}
+.cc-refresh:hover,.cc-open:hover{background:var(--hover,rgba(127,127,127,.16))}
+.command-center :focus-visible{outline:2px solid #65bfa0;outline-offset:3px}
+.cc-columns,.cc-task{display:grid;grid-template-columns:minmax(180px,1.5fr) minmax(135px,.8fr) minmax(160px,1fr) 85px;gap:18px;align-items:center}
+.cc-columns{font:10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.06em;opacity:.6;padding:0 0 12px}
+.cc-task{padding:18px 0;border-top:1px solid var(--border,#444)}
+.cc-identity{padding-left:calc(var(--depth)*18px);min-width:0}
+.cc-kind{font:10px ui-monospace,monospace;opacity:.65;margin-bottom:6px}
+.cc-task h2{font-size:14px;line-height:1.45;font-weight:550;margin:0;overflow-wrap:anywhere}
+.cc-path,.cc-parent{font-size:11px;opacity:.6;overflow-wrap:anywhere;margin-top:5px}
+.cc-state{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.cc-state small{font-size:10px;opacity:.65}
+.cc-badge{font:11px ui-monospace,monospace;border:1px solid var(--border,#555);padding:4px 7px;border-radius:4px}
+.cc-badge[data-status=active]{color:#65bfa0;border-color:#488b74}
+.cc-badge[data-status=systemError]{color:#e9a087;border-color:#ad7360}
+.cc-activity{font-size:12px;line-height:1.5}
+.cc-activity time{display:block;font-size:11px;opacity:.6;margin-top:4px}
+.cc-empty{padding:40px 0;max-width:660px;line-height:1.7;opacity:.7}
+.cc-footnote{font-size:11px;line-height:1.7;opacity:.6;max-width:850px;margin-top:28px}
+@media(max-width:1100px){.cc-columns{display:none}.cc-task{grid-template-columns:minmax(0,1fr) 135px}.cc-activity{padding-left:calc(var(--depth)*18px)}.cc-open{justify-self:start}}
+@media(max-width:480px){.command-center{padding:24px 16px}.cc-heading h1{font-size:23px}.cc-task{gap:12px;grid-template-columns:minmax(0,1fr) 115px}.cc-identity{padding-left:calc(min(var(--depth),3)*10px)}.cc-toolbar input{max-width:100%}.cc-toolbar label:first-of-type{flex:1 1 100%}.cc-counts{flex-basis:100%;line-height:1.6}}
+
+@media(prefers-color-scheme:light){.cc-health,.cc-badge[data-status=active]{color:#236b51}.cc-health[data-stale=true]{color:#83551e}}
