@@ -11,6 +11,7 @@ const BROWSER_RPC_METHODS = new Set([
   "thread/resume",
   "thread/turns/list",
   "host/thread/live",
+  "host/agents/list",
   "host/thread/subscribe",
   "thread/start",
   "turn/start",

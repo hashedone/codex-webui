@@ -341,3 +341,29 @@ describe("thread-scoped browser bridge", () => {
     expect(serverStderr).not.toContain("client.write is not a function");
   });
 });
+
+
+test("command center summaries do not subscribe to thread events or approvals (WS and HTTP)", async () => {
+  const observer = await connect(port);
+  const sseObserver = new SseClient("overview-observer");
+  try {
+    await sseObserver.connect();
+    const overview = await observer.rpc("host/agents/list");
+    expect(overview.scope).toBe("dashboard-app-server");
+    expect(overview.tasks.map(task => task.id).sort()).toEqual(["thread-alpha", "thread-beta"]);
+    expect(overview.stale).toBe(false);
+    const httpOverview = await sseObserver.rpc("host/agents/list");
+    expect(httpOverview.tasks).toEqual(overview.tasks);
+    await alpha.rpc("host/thread/subscribe", { threadId: "thread-alpha", generation: 999 });
+    await alpha.rpc("turn/start", { threadId: "thread-alpha", input: [{ type: "text", text: "overview routing test" }] });
+    await Bun.sleep(100);
+    for (const messages of [observer.messages, sseObserver.messages]) {
+      expect(messages.some(message => message.type === "codex/request")).toBe(false);
+      expect(messages.some(message => message.type === "codex/notification" && message.payload.params.threadId === "thread-alpha")).toBe(false);
+    }
+    observer.respondToCodex(9001, { decision: "accept" });
+    const denial = await waitFor(() => observer.messages.find(message => message.type === "rpc/error"));
+    expect(denial.error).toContain("not the recipient");
+    alpha.respondToCodex(9001, { decision: "decline" });
+  } finally { observer.socket.terminate(); sseObserver.close(); }
+});

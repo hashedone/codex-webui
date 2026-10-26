@@ -294,3 +294,8 @@ Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting a pull reques
 ## License
 
 Source code is available under the [MIT License](./LICENSE). Third-party components and optional local assets are covered by their own licenses and terms; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+
+### Agent command center
+
+Open **Agent command center** in the sidebar, or `/?view=agents`, for a live task tree on the dashboard-owned app-server. Desktop sessions and other Codex processes are outside its scope. See [ownership, installed-CLI comparison, and verification](docs/agent-command-center.md) for the supported contract and known history limitation.

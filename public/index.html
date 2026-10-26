@@ -45,6 +45,7 @@
         <label class="sidebar-search-field"><span class="icon-slot" data-icon="search"></span><input id="threadSearch" type="search" placeholder="Search chats" aria-label="Search chats"></label>
         <button class="sidebar-search-close" id="sidebarSearchClose" type="button" title="Close search" aria-label="Close search"><span class="icon-slot" data-icon="x"></span></button>
       </div>
+      <button class="sidebar-row" id="showCommandCenter" type="button" aria-controls="agentCommandCenter" aria-pressed="false"><span class="icon-slot" data-icon="gitBranch"></span><span>Agent command center</span></button>
       <button class="sidebar-row new-task" id="newTask"><span class="icon-slot" data-icon="plus"></span><span>New chat</span><kbd>⌘K</kbd></button>
     </div>
     <div class="sidebar-scroll">
@@ -81,6 +82,15 @@
   </aside>
 
   <main class="conversation-shell">
+    <section id="agentCommandCenter" class="command-center" aria-label="Agent command center" hidden>
+      <div class="cc-heading"><div><p class="cc-overline">LOCAL OPERATIONS</p><h1 tabindex="-1">Agent command center</h1></div><button type="button" class="cc-refresh">Refresh</button></div>
+      <p class="cc-scope"><strong>Dashboard-owned app-server only.</strong> Desktop sessions and other Codex processes are not monitored. Descendants appear when this server exposes them; this is not a complete view of Codex Desktop.</p>
+      <div class="cc-health" role="status">Connecting…</div>
+      <div class="cc-toolbar"><p class="cc-counts">Discovering tasks…</p><label><span class="sr-only">Find an agent task</span><input type="search" placeholder="Find task or workspace" aria-label="Find an agent task"></label><label><span class="sr-only">Task filter</span><select aria-label="Task filter"><option value="all">All tasks</option><option value="active">Active tasks</option><option value="descendants">Descendants</option></select></label></div>
+      <div class="cc-columns" aria-hidden="true"><span>Task / relationship</span><span>Current status</span><span>Last meaningful activity</span><span></span></div>
+      <div class="cc-tasks"></div>
+      <p class="cc-footnote">Updates every 2 seconds while visible. “Idle” is a runtime state, not a completion claim. Input capability determines delegated/internal labels; unknown remains explicit. Opening a task reads its history. Approvals stay with their original recipient tab.</p>
+    </section>
     <section class="conversation" id="conversation">
       <div class="empty-state" id="emptyState">
         <span id="emptyCodexMark"></span>

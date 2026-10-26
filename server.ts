@@ -14,6 +14,7 @@ import { readWorkspaceContext } from "./workspace-context.js";
 import { searchWorkspaceFiles } from "./file-search.js";
 import { resolveLocalFile } from "./file-service.js";
 import { resolveLocalImage } from "./image-service.js";
+import { AgentOverview } from "./agent-overview.js";
 import { LiveSessionStore } from "./live-session-service.js";
 import {
   createPasswordSession,
@@ -68,6 +69,7 @@ const pending = new Map<number, { resolve: (value: any) => void; reject: (error:
 const pendingCodexRequests = new Map<RequestId, PendingCodexRequest>();
 const reviewDiffs = new ReviewDiffStore();
 const liveSessions = new LiveSessionStore();
+const agentOverview = new AgentOverview(request);
 const threadPaths = new Map<string, string>();
 let codexSessionsRoot = resolve(homeDir, ".codex", "sessions");
 let seq = 1;
@@ -92,6 +94,7 @@ function startCodex() {
     detached: process.platform !== "win32",
   });
   codex = child;
+  agentOverview.reset();
   connected = false;
   stdoutBuffer = "";
   child.stdout.setEncoding("utf8");
@@ -190,6 +193,7 @@ function handleCodex(message: any) {
     return;
   }
   if (message.method) {
+    agentOverview.observe(message.method, message.params);
     if (message.method === "serverRequest/resolved") {
       const resolved = pendingCodexRequests.get(message.params?.requestId);
       pendingCodexRequests.delete(message.params?.requestId);
@@ -326,6 +330,9 @@ async function dispatchBrowserMessage(message: any, client?: WebSocket, sseClien
       if (message.method === "host/thread/subscribe") {
         const result = subscribeBrowserConnection(client, sseClient, params.threadId ?? null, params.generation);
         return { type: "rpc/result", id, result };
+      }
+      if (message.method === "host/agents/list") {
+        return { type: "rpc/result", id, result: await agentOverview.read(connected) };
       }
       const result = message.method === "host/thread/live"
         ? await readLiveThread(params.threadId)
