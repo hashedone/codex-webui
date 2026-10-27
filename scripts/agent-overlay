@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/.." && pwd)"
+overlay_bin="${CODEX_AGENT_OVERLAY_BIN:-${repo_root}/overlay/target/release/codex-agent-overlay}"
+
+if [[ ! -x "${overlay_bin}" ]]; then
+  printf 'Agent overlay binary not found: %s\n' "${overlay_bin}" >&2
+  printf 'Build it with: cargo build --release --manifest-path %s/overlay/Cargo.toml\n' "${repo_root}" >&2
+  exit 127
+fi
+
+exec "${overlay_bin}" "$@"

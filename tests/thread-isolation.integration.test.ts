@@ -382,3 +382,45 @@ test("command center summaries do not subscribe to thread events or approvals (W
     alpha.respondToCodex(9001, { decision: "decline" });
   } finally { observer.socket.terminate(); sseObserver.close(); }
 });
+
+test("native overlay snapshot exposes the presence DTO through an authenticated read-only endpoint", async () => {
+  const endpoint = `http://127.0.0.1:${port}/api/agents/snapshot`;
+  const denied = await fetch(endpoint, { headers: { host: "codex.example.com" } });
+  expect(denied.status).toBe(401);
+
+  const crossOrigin = await fetch(endpoint, {
+    headers: { host: "codex.example.com", origin: "https://evil.example", authorization: AUTHORIZATION },
+  });
+  expect(crossOrigin.status).toBe(401);
+
+  const response = await fetch(endpoint, {
+    headers: { host: "codex.example.com", origin: "http://codex.example.com", authorization: AUTHORIZATION },
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+  const snapshot = await response.json();
+  expect(snapshot.scope).toBe("presence-hub");
+  expect(snapshot.tasks.map((task: any) => task.id).sort()).toEqual([
+    "codex-local:desktop-root",
+    "webui:thread-alpha",
+    "webui:thread-beta",
+  ]);
+  expect(snapshot.sources.map((source: any) => source.id)).toEqual(["webui", "codex-local"]);
+  expect(snapshot.tasks.find((task: any) => task.id === "codex-local:desktop-root")).toMatchObject({
+    localId: "desktop-root",
+    parentId: null,
+    sourceId: "codex-local",
+    status: "active",
+    turnStatus: "inProgress",
+    source: { id: "codex-local", monitorOnly: true },
+  });
+  expect(JSON.stringify(snapshot)).not.toMatch(/prompt|transcript|toolOutput|rolloutPath/i);
+
+  const mutation = await fetch(endpoint, {
+    method: "POST",
+    headers: { authorization: AUTHORIZATION },
+  });
+  expect(mutation.status).toBe(405);
+  expect(mutation.headers.get("allow")).toBe("GET");
+});
