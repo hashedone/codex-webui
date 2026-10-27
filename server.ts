@@ -600,6 +600,38 @@ const server = createServer(async (req, res) => {
     });
     return;
   }
+  if (url.pathname === "/api/agents/snapshot") {
+    if (req.method !== "GET") {
+      res.writeHead(405, {
+        "content-type": "application/json; charset=utf-8",
+        allow: "GET",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({ error: "Method not allowed" }));
+      return;
+    }
+    try {
+      const snapshot = await presenceHub.read(connected);
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "cross-origin-resource-policy": "same-origin",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify(snapshot));
+    } catch (error) {
+      console.error("[codex-webui] agent snapshot failed", error);
+      res.writeHead(503, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "retry-after": "1",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({ error: "Agent snapshot unavailable" }));
+    }
+    return;
+  }
   if (url.pathname === "/api/rpc" || url.pathname === "/api/codex/respond") {
     if (req.method !== "POST") {
       res.writeHead(405, { "content-type": "application/json; charset=utf-8", allow: "POST" });

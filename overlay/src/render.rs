@@ -1,0 +1,360 @@
+use crate::model::{Snapshot, display_rows};
+use fontdue::{
+    Font, FontSettings,
+    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
+};
+use std::{env, fs, path::PathBuf};
+
+pub const WIDTH: u32 = 460;
+pub const HEIGHT: u32 = 680;
+
+#[derive(Clone, Copy)]
+struct Color(u8, u8, u8, u8);
+
+const INK: Color = Color(230, 236, 239, 255);
+const MUTED: Color = Color(137, 151, 158, 255);
+const FAINT: Color = Color(82, 97, 105, 255);
+const GREEN: Color = Color(84, 214, 164, 255);
+const AMBER: Color = Color(236, 178, 83, 255);
+const RED: Color = Color(240, 103, 114, 255);
+const BLUE: Color = Color(95, 168, 255, 255);
+
+pub struct Renderer {
+    font: Font,
+}
+
+impl Renderer {
+    pub fn load() -> Result<Self, String> {
+        let configured: Option<PathBuf> = env::var_os("CODEX_OVERLAY_FONT").map(Into::into);
+        let candidates = [
+            configured,
+            Some("/usr/share/fonts/truetype/inter/Inter-Regular.ttf".into()),
+            Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()),
+            Some("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf".into()),
+        ];
+        let path = candidates
+            .into_iter()
+            .flatten()
+            .find(|path| path.exists())
+            .ok_or("no usable UI font found; set CODEX_OVERLAY_FONT".to_owned())?;
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
+        let font = Font::from_bytes(bytes, FontSettings::default())
+            .map_err(|error| format!("unable to load {}: {error}", path.display()))?;
+        Ok(Self { font })
+    }
+
+    pub fn draw(
+        &self,
+        canvas: &mut [u8],
+        snapshot: Option<&Snapshot>,
+        transport_error: Option<&str>,
+    ) {
+        canvas.fill(0);
+        rounded_rect(
+            canvas,
+            0,
+            0,
+            WIDTH as i32,
+            HEIGHT as i32,
+            18,
+            Color(12, 16, 19, 238),
+        );
+        fill_rect(canvas, 1, 1, 5, HEIGHT as i32 - 2, Color(66, 122, 142, 220));
+        self.text(canvas, 26, 24, 11.0, MUTED, "LOCAL OPERATIONS", 400);
+        self.text(canvas, 26, 47, 21.0, INK, "AGENT PRESENCE", 280);
+
+        let state = if transport_error.is_some() {
+            "OFFLINE"
+        } else if snapshot.is_none() {
+            "WAITING"
+        } else if snapshot.is_some_and(|value| value.stale || !value.connected) {
+            "STALE"
+        } else {
+            "LIVE"
+        };
+        let state_color = match state {
+            "LIVE" => GREEN,
+            "STALE" => AMBER,
+            "OFFLINE" => RED,
+            _ => FAINT,
+        };
+        status_pill(canvas, 362, 42, state, state_color, &self.font);
+        fill_rect(canvas, 26, 82, 408, 1, Color(47, 58, 64, 255));
+
+        let Some(snapshot) = snapshot else {
+            self.empty(
+                canvas,
+                "WAITING FOR WEBUI",
+                transport_error.unwrap_or("No snapshot received yet"),
+            );
+            return;
+        };
+        let rows = display_rows(snapshot);
+        if rows.is_empty() {
+            self.empty(
+                canvas,
+                "NO ACTIVE AGENTS",
+                transport_error
+                    .or(snapshot.error.as_deref())
+                    .unwrap_or("Presence sources are connected"),
+            );
+            return;
+        }
+
+        let mut y = 100i32;
+        let mut rendered = 0usize;
+        for row in &rows {
+            let needs = if row.project.is_some() { 70 } else { 48 };
+            if y + needs > HEIGHT as i32 - 46 {
+                break;
+            }
+            if let Some(project) = &row.project {
+                if rendered > 0 {
+                    y += 10;
+                }
+                self.text(canvas, 26, y, 10.0, BLUE, &project.to_uppercase(), 390);
+                y += 24;
+            }
+            let x = 27 + (row.depth.min(3) as i32 * 22);
+            if row.depth > 0 {
+                fill_rect(canvas, x - 13, y + 4, 1, 30, Color(47, 60, 66, 255));
+            }
+            let color = status_color(&row.status);
+            circle(canvas, x + 4, y + 10, 4, color);
+            let title_color = if row.hierarchy_context { MUTED } else { INK };
+            self.text(
+                canvas,
+                x + 17,
+                y,
+                14.0,
+                title_color,
+                &ellipsize(&row.title, 48),
+                360 - row.depth as i32 * 22,
+            );
+            let status = if row.hierarchy_context {
+                "context"
+            } else {
+                status_label(&row.status)
+            };
+            self.text(
+                canvas,
+                x + 17,
+                y + 22,
+                10.0,
+                MUTED,
+                &format!("{}  ·  {status}", row.detail),
+                350,
+            );
+            y += 48;
+            rendered += 1;
+        }
+        if rendered < rows.len() {
+            self.text(
+                canvas,
+                27,
+                HEIGHT as i32 - 57,
+                10.0,
+                MUTED,
+                &format!("+ {} MORE AGENTS", rows.len() - rendered),
+                300,
+            );
+        }
+        fill_rect(
+            canvas,
+            26,
+            HEIGHT as i32 - 36,
+            408,
+            1,
+            Color(47, 58, 64, 255),
+        );
+        self.text(
+            canvas,
+            26,
+            HEIGHT as i32 - 25,
+            9.5,
+            FAINT,
+            "READ-ONLY  ·  INPUT PASSES THROUGH",
+            400,
+        );
+    }
+
+    fn empty(&self, canvas: &mut [u8], title: &str, detail: &str) {
+        self.text(canvas, 26, 119, 13.0, MUTED, title, 390);
+        self.text(canvas, 26, 145, 11.0, FAINT, &ellipsize(detail, 58), 400);
+        fill_rect(
+            canvas,
+            26,
+            HEIGHT as i32 - 36,
+            408,
+            1,
+            Color(47, 58, 64, 255),
+        );
+        self.text(
+            canvas,
+            26,
+            HEIGHT as i32 - 25,
+            9.5,
+            FAINT,
+            "READ-ONLY  ·  INPUT PASSES THROUGH",
+            400,
+        );
+    }
+
+    fn text(
+        &self,
+        canvas: &mut [u8],
+        x: i32,
+        y: i32,
+        px: f32,
+        color: Color,
+        text: &str,
+        max_width: i32,
+    ) {
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&LayoutSettings {
+            x: x as f32,
+            y: y as f32,
+            max_width: None,
+            max_height: None,
+            ..LayoutSettings::default()
+        });
+        layout.append(&[&self.font], &TextStyle::new(text, px, 0));
+        for glyph in layout.glyphs() {
+            let (metrics, bitmap) = self.font.rasterize_config(glyph.key);
+            for gy in 0..metrics.height {
+                for gx in 0..metrics.width {
+                    let dx = glyph.x as i32 + gx as i32;
+                    let dy = glyph.y as i32 + gy as i32;
+                    if dx >= x + max_width {
+                        continue;
+                    }
+                    let alpha = bitmap[gy * metrics.width + gx];
+                    blend(
+                        canvas,
+                        dx,
+                        dy,
+                        Color(
+                            color.0,
+                            color.1,
+                            color.2,
+                            ((alpha as u16 * color.3 as u16) / 255) as u8,
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn ellipsize(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let mut value: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    value.push('…');
+    value
+}
+
+fn status_label(status: &str) -> &'static str {
+    match status {
+        "active" | "inProgress" => "working",
+        "completed" => "complete",
+        "failed" => "failed",
+        "interrupted" => "interrupted",
+        "notLoaded" | "idle" => "idle",
+        _ => "unknown",
+    }
+}
+
+fn status_color(status: &str) -> Color {
+    match status {
+        "active" | "inProgress" => GREEN,
+        "completed" => BLUE,
+        "failed" => RED,
+        "interrupted" => AMBER,
+        _ => FAINT,
+    }
+}
+
+fn status_pill(canvas: &mut [u8], x: i32, y: i32, text: &str, color: Color, font: &Font) {
+    rounded_rect(
+        canvas,
+        x,
+        y,
+        72,
+        24,
+        12,
+        Color(color.0, color.1, color.2, 30),
+    );
+    circle(canvas, x + 13, y + 12, 3, color);
+    let renderer = Renderer { font: font.clone() };
+    renderer.text(canvas, x + 23, y + 6, 9.5, color, text, 44);
+}
+
+fn blend(canvas: &mut [u8], x: i32, y: i32, source: Color) {
+    if x < 0 || y < 0 || x >= WIDTH as i32 || y >= HEIGHT as i32 || source.3 == 0 {
+        return;
+    }
+    let index = ((y as u32 * WIDTH + x as u32) * 4) as usize;
+    let da = canvas[index + 3] as u16;
+    let sa = source.3 as u16;
+    let inv = 255 - sa;
+    let out_a = sa + (da * inv + 127) / 255;
+    for (offset, channel) in [(0, source.2), (1, source.1), (2, source.0)] {
+        let dst = canvas[index + offset] as u16;
+        let src_premultiplied = channel as u16 * sa / 255;
+        canvas[index + offset] = (src_premultiplied + (dst * inv + 127) / 255).min(255) as u8;
+    }
+    canvas[index + 3] = out_a.min(255) as u8;
+}
+
+fn fill_rect(canvas: &mut [u8], x: i32, y: i32, width: i32, height: i32, color: Color) {
+    for py in y.max(0)..(y + height).min(HEIGHT as i32) {
+        for px in x.max(0)..(x + width).min(WIDTH as i32) {
+            blend(canvas, px, py, color);
+        }
+    }
+}
+
+fn rounded_rect(
+    canvas: &mut [u8],
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    radius: i32,
+    color: Color,
+) {
+    for py in y..y + height {
+        for px in x..x + width {
+            let dx = if px < x + radius {
+                x + radius - px
+            } else if px >= x + width - radius {
+                px - (x + width - radius - 1)
+            } else {
+                0
+            };
+            let dy = if py < y + radius {
+                y + radius - py
+            } else if py >= y + height - radius {
+                py - (y + height - radius - 1)
+            } else {
+                0
+            };
+            if dx * dx + dy * dy <= radius * radius {
+                blend(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+fn circle(canvas: &mut [u8], cx: i32, cy: i32, radius: i32, color: Color) {
+    for y in cy - radius..=cy + radius {
+        for x in cx - radius..=cx + radius {
+            if (x - cx).pow(2) + (y - cy).pow(2) <= radius.pow(2) {
+                blend(canvas, x, y, color);
+            }
+        }
+    }
+}

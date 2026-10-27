@@ -1,0 +1,10 @@
+// Codex agent presence overlay for niri 26.04.
+// This repository is expected at /home/hashed/git/codex-webui.
+spawn-at-startup "/home/hashed/git/codex-webui/scripts/agent-overlay"
+
+binds {
+    // Keep the toggle available while a game inhibits compositor shortcuts.
+    Mod+Shift+A allow-inhibiting=false {
+        spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "toggle"
+    }
+}

@@ -187,6 +187,13 @@ The shell mirrors Codex Desktop's separate Bottom Panel, Summary, and Task Side 
 
 ## Architecture
 
+### Passive niri overlay
+
+The optional native Wayland overlay shows the live project/agent/subagent tree above fullscreen
+applications without taking focus or input. See [Passive agent overlay on niri](./docs/niri-agent-overlay.md)
+for the release build, resident startup, global toggle binding, and deferred fullscreen acceptance
+check.
+
 ```mermaid
 flowchart LR
     Browser[Browser UI] <-->|WebSocket JSON-RPC| Server[Bun HTTP + WS server]
