@@ -1,0 +1,16 @@
+[Unit]
+Description=Codex WebUI local agent bridge
+Documentation=file:/home/hashed/git/codex-webui/docs/systemd-user-service.md
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+ExecStart=/home/hashed/bin/codex-webui
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

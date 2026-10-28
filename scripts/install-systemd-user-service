@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/.." && pwd)"
+source_unit="${repo_root}/systemd/codex-webui.service"
+user_config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+unit_dir="${user_config_home}/systemd/user"
+installed_unit="${unit_dir}/codex-webui.service"
+
+if [[ ! -x /home/hashed/bin/codex-webui ]]; then
+  printf 'codex-webui launcher is missing or not executable: %s\n' \
+    /home/hashed/bin/codex-webui >&2
+  exit 1
+fi
+
+install -D -m 0644 "${source_unit}" "${installed_unit}"
+systemctl --user daemon-reload
+systemctl --user enable codex-webui.service
+systemctl --user restart codex-webui.service
+
+if ! systemctl --user is-active --quiet codex-webui.service; then
+  systemctl --user --no-pager --full status codex-webui.service >&2 || true
+  exit 1
+fi
+
+printf 'Codex WebUI is installed and running as a user service.\n'
+printf 'Open: http://127.0.0.1:19889\n'
+printf 'Status: systemctl --user status codex-webui.service\n'
+printf 'Logs: journalctl --user -u codex-webui.service -f\n'
