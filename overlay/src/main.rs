@@ -41,6 +41,14 @@ use wayland_client::{
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:19889/api/agents/snapshot";
 const POLL_INTERVAL: Duration = Duration::from_millis(1500);
 
+fn configure_layer_surface(layer: &LayerSurface) {
+    layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer.set_exclusive_zone(-1);
+    layer.set_margin(24, 24, 0, 0);
+    layer.set_size(WIDTH, HEIGHT);
+}
+
 #[derive(Debug)]
 struct Options {
     endpoint: String,
@@ -234,11 +242,7 @@ fn run(options: Options) -> Result<(), String> {
         Some("codex-agent-overlay"),
         None,
     );
-    layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_exclusive_zone(-1);
-    layer.set_margin(24, 24, 0, 0);
-    layer.set_size(WIDTH, HEIGHT);
+    configure_layer_surface(&layer);
     let empty_region =
         Region::new(&compositor).map_err(|error| format!("input region failed: {error}"))?;
     layer.set_input_region(Some(empty_region.wl_region()));
@@ -256,8 +260,7 @@ fn run(options: Options) -> Result<(), String> {
         renderer,
         listener,
         receiver,
-        configured: false,
-        visible: !options.hidden,
+        surface: SurfaceLifecycle::new(!options.hidden),
         exit: false,
         snapshot: None,
         transport_error: None,
@@ -286,12 +289,88 @@ struct App {
     renderer: Renderer,
     listener: UnixListener,
     receiver: Receiver<Result<Snapshot, String>>,
-    configured: bool,
-    visible: bool,
+    surface: SurfaceLifecycle,
     exit: bool,
     snapshot: Option<Snapshot>,
     transport_error: Option<String>,
     redraw: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SurfaceAction {
+    None,
+    Draw,
+    RequestConfigure,
+    Unmap,
+}
+
+/// Tracks requested visibility separately from the layer-surface protocol state.
+///
+/// Attaching a null buffer unmaps a layer surface. The next map must start with
+/// a bufferless commit and wait for a fresh configure before attaching a new
+/// buffer, even though the application still considers itself visible.
+#[derive(Debug)]
+struct SurfaceLifecycle {
+    requested_visible: bool,
+    configured: bool,
+    mapped: bool,
+    configure_pending: bool,
+}
+
+impl SurfaceLifecycle {
+    fn new(requested_visible: bool) -> Self {
+        Self {
+            requested_visible,
+            configured: false,
+            mapped: false,
+            // run() performs the initial bufferless commit before constructing App.
+            configure_pending: true,
+        }
+    }
+
+    fn request_visibility(&mut self, visible: bool) -> SurfaceAction {
+        if self.requested_visible == visible {
+            return SurfaceAction::None;
+        }
+        self.requested_visible = visible;
+
+        if !visible {
+            if self.mapped {
+                self.mapped = false;
+                self.configured = false;
+                self.configure_pending = false;
+                return SurfaceAction::Unmap;
+            }
+            return SurfaceAction::None;
+        }
+
+        if self.configured {
+            SurfaceAction::Draw
+        } else if self.configure_pending {
+            SurfaceAction::None
+        } else {
+            self.configure_pending = true;
+            SurfaceAction::RequestConfigure
+        }
+    }
+
+    fn configured(&mut self) -> SurfaceAction {
+        self.configure_pending = false;
+        self.configured = true;
+        if self.requested_visible {
+            SurfaceAction::Draw
+        } else {
+            SurfaceAction::None
+        }
+    }
+
+    fn mapped(&mut self) {
+        self.mapped = true;
+    }
+
+    fn should_draw(&self) -> bool {
+        self.requested_visible && self.configured
+    }
 }
 
 impl App {
@@ -315,7 +394,7 @@ impl App {
             let response = match (&mut stream).take(64).read_to_string(&mut command) {
                 Ok(_) => match command.trim() {
                     "toggle" => {
-                        self.set_visible(!self.visible);
+                        self.set_visible(!self.surface.requested_visible);
                         self.state_line()
                     }
                     "show" => {
@@ -333,13 +412,17 @@ impl App {
             };
             let _ = stream.write_all(response.as_bytes());
         }
-        if self.redraw && self.visible && self.configured {
+        if self.redraw && self.surface.should_draw() {
             self.draw(qh);
         }
     }
 
     fn state_line(&self) -> String {
-        let visibility = if self.visible { "visible" } else { "hidden" };
+        let visibility = if self.surface.requested_visible {
+            "visible"
+        } else {
+            "hidden"
+        };
         let health = if self.transport_error.is_some() {
             "offline"
         } else if self
@@ -361,15 +444,22 @@ impl App {
     }
 
     fn set_visible(&mut self, visible: bool) {
-        if self.visible == visible {
-            return;
-        }
-        self.visible = visible;
-        if visible {
-            self.redraw = true;
-        } else {
-            self.layer.wl_surface().attach(None, 0, 0);
-            self.layer.commit();
+        match self.surface.request_visibility(visible) {
+            SurfaceAction::None => {}
+            SurfaceAction::Draw => {
+                self.redraw = true;
+            }
+            SurfaceAction::RequestConfigure => {
+                // A null-buffer commit unmapped the surface. Remapping starts
+                // from the layer role defaults, so restore every role property
+                // before the fresh bufferless commit and configure handshake.
+                configure_layer_surface(&self.layer);
+                self.layer.commit();
+            }
+            SurfaceAction::Unmap => {
+                self.layer.wl_surface().attach(None, 0, 0);
+                self.layer.commit();
+            }
         }
     }
 
@@ -393,6 +483,7 @@ impl App {
             .damage_buffer(0, 0, WIDTH as i32, HEIGHT as i32);
         if buffer.attach_to(self.layer.wl_surface()).is_ok() {
             self.layer.commit();
+            self.surface.mapped();
             self.redraw = false;
         }
     }
@@ -418,7 +509,7 @@ impl CompositorHandler for App {
         self.redraw = true;
     }
     fn frame(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
-        if self.redraw && self.visible {
+        if self.redraw && self.surface.should_draw() {
             self.draw(qh);
         }
     }
@@ -452,8 +543,7 @@ impl LayerShellHandler for App {
         _: LayerSurfaceConfigure,
         _: u32,
     ) {
-        self.configured = true;
-        if self.visible {
+        if self.surface.configured() == SurfaceAction::Draw {
             self.draw(qh);
         }
     }
@@ -499,5 +589,56 @@ mod tests {
         ));
         assert!(!is_loopback_endpoint("http://127.0.0.1.example.test:80/x"));
         assert!(!is_loopback_endpoint("http://127.0.0.1:80@evil.test/x"));
+    }
+
+    #[test]
+    fn initial_hidden_surface_waits_until_explicitly_shown() {
+        let mut surface = SurfaceLifecycle::new(false);
+
+        assert_eq!(surface.configured(), SurfaceAction::None);
+        assert!(!surface.should_draw());
+        assert_eq!(surface.request_visibility(true), SurfaceAction::Draw);
+        assert!(surface.should_draw());
+        surface.mapped();
+        assert!(surface.mapped);
+    }
+
+    #[test]
+    fn repeated_hide_show_requires_a_fresh_configure_before_each_remap() {
+        let mut surface = SurfaceLifecycle::new(true);
+        assert_eq!(surface.configured(), SurfaceAction::Draw);
+        surface.mapped();
+
+        for _ in 0..3 {
+            assert_eq!(surface.request_visibility(false), SurfaceAction::Unmap);
+            assert!(!surface.mapped);
+            assert!(!surface.should_draw());
+
+            assert_eq!(
+                surface.request_visibility(true),
+                SurfaceAction::RequestConfigure
+            );
+            assert!(!surface.should_draw());
+            assert_eq!(surface.configured(), SurfaceAction::Draw);
+            surface.mapped();
+        }
+    }
+
+    #[test]
+    fn configure_received_while_hidden_never_draws() {
+        let mut surface = SurfaceLifecycle::new(true);
+        assert_eq!(surface.configured(), SurfaceAction::Draw);
+        surface.mapped();
+        assert_eq!(surface.request_visibility(false), SurfaceAction::Unmap);
+        assert_eq!(
+            surface.request_visibility(true),
+            SurfaceAction::RequestConfigure
+        );
+        assert_eq!(surface.request_visibility(false), SurfaceAction::None);
+
+        assert_eq!(surface.configured(), SurfaceAction::None);
+        assert!(!surface.should_draw());
+
+        assert_eq!(surface.request_visibility(true), SurfaceAction::Draw);
     }
 }
