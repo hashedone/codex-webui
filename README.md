@@ -194,6 +194,10 @@ applications without taking focus or input. See [Passive agent overlay on niri](
 for the release build, resident startup, global toggle binding, and deferred fullscreen acceptance
 check.
 
+The overlay and Agent Command Center can use the
+[persistent systemd user service](./docs/systemd-user-service.md), which keeps the local WebUI agent
+bridge running without an open terminal or browser and restarts it after failures.
+
 ```mermaid
 flowchart LR
     Browser[Browser UI] <-->|WebSocket JSON-RPC| Server[Bun HTTP + WS server]

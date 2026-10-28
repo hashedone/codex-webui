@@ -11,7 +11,9 @@ This first slice deliberately has no agent input, resume action, voice, or push-
 
 The overlay uses a repository-local installation: keep the canonical checkout at
 `/home/hashed/git/codex-webui` and build the release binary there. Nothing needs to be copied into
-`/usr` or `~/.local`, and this integration does not add a systemd service.
+`/usr` or `~/.local`. Codex WebUI should run continuously through the
+[systemd user service](./systemd-user-service.md); the overlay reconnects automatically while that
+service restarts.
 
 Build the binary once, and rebuild it after overlay source changes:
 
