@@ -37,22 +37,22 @@ Copy the two nodes from [`niri-agent-overlay.kdl`](./niri-agent-overlay.kdl) int
 top level and `binds` block of `~/.config/niri/config.kdl`:
 
 ```kdl
-spawn-at-startup "/home/hashed/git/codex-webui/scripts/agent-overlay"
+spawn-at-startup "/home/hashed/git/codex-webui/scripts/agent-overlay" "--hidden"
 
 binds {
-    Mod+Shift+A allow-inhibiting=false {
+    Mod+A allow-inhibiting=false {
         spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "toggle"
     }
 }
 ```
 
-If a `binds` block already exists, add only the `Mod+Shift+A` entry to it. Do not add a second
+If a `binds` block already exists, add only the `Mod+A` entry to it. Do not add a second
 `binds` block. The `allow-inhibiting=false` property makes the toggle available even when a game
 has activated the keyboard-shortcuts inhibitor. Change the key chord if it conflicts with an
 existing binding.
 
-`spawn-at-startup` starts the resident on the next niri session. After editing the config, validate
-it before reloading:
+`spawn-at-startup` starts the resident hidden on the next niri session; `Mod+A` reveals it on demand.
+After editing the config, validate it before reloading:
 
 ```bash
 niri validate -c ~/.config/niri/config.kdl
