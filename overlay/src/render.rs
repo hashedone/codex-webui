@@ -3,7 +3,10 @@ use fontdue::{
     Font, FontSettings,
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
 };
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 pub const WIDTH: u32 = 460;
 pub const HEIGHT: u32 = 680;
@@ -19,6 +22,33 @@ const AMBER: Color = Color(236, 178, 83, 255);
 const RED: Color = Color(240, 103, 114, 255);
 const BLUE: Color = Color(95, 168, 255, 255);
 
+// Keep these explicit and deterministic: the overlay starts before a desktop
+// environment is necessarily ready, so font discovery must not depend on an
+// external fontconfig process. Arch packages use `noto`, `TTF`, and `OTF` at
+// the top level; Debian-family packages commonly use `truetype`.
+const SYSTEM_FONT_CANDIDATES: &[&str] = &[
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/TTF/NotoSans-Regular.ttf",
+    "/usr/share/fonts/TTF/Inter-Regular.ttf",
+    "/usr/share/fonts/OTF/Inter-Regular.otf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/inter/Inter-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+];
+
+fn select_font_path(
+    configured: Option<PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    configured
+        .into_iter()
+        .chain(SYSTEM_FONT_CANDIDATES.iter().map(PathBuf::from))
+        .find(|path| exists(path))
+}
+
 pub struct Renderer {
     font: Font,
 }
@@ -26,16 +56,7 @@ pub struct Renderer {
 impl Renderer {
     pub fn load() -> Result<Self, String> {
         let configured: Option<PathBuf> = env::var_os("CODEX_OVERLAY_FONT").map(Into::into);
-        let candidates = [
-            configured,
-            Some("/usr/share/fonts/truetype/inter/Inter-Regular.ttf".into()),
-            Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()),
-            Some("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf".into()),
-        ];
-        let path = candidates
-            .into_iter()
-            .flatten()
-            .find(|path| path.exists())
+        let path = select_font_path(configured, Path::exists)
             .ok_or("no usable UI font found; set CODEX_OVERLAY_FONT".to_owned())?;
         let bytes = fs::read(&path)
             .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
@@ -244,6 +265,44 @@ impl Renderer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SYSTEM_FONT_CANDIDATES, select_font_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn configured_font_has_priority_over_system_candidates() {
+        let configured = PathBuf::from("/custom/overlay.ttf");
+        let first_system = Path::new(SYSTEM_FONT_CANDIDATES[0]);
+
+        let selected = select_font_path(Some(configured.clone()), |path| {
+            path == configured || path == first_system
+        });
+
+        assert_eq!(selected, Some(configured));
+    }
+
+    #[test]
+    fn selects_first_existing_system_candidate_in_declared_order() {
+        let earlier = Path::new(SYSTEM_FONT_CANDIDATES[1]);
+        let later = Path::new(SYSTEM_FONT_CANDIDATES[4]);
+
+        let selected = select_font_path(None, |path| path == earlier || path == later);
+
+        assert_eq!(selected.as_deref(), Some(earlier));
+    }
+
+    #[test]
+    fn skips_missing_configured_font_before_system_fallback() {
+        let configured = PathBuf::from("/custom/missing.ttf");
+        let system = Path::new(SYSTEM_FONT_CANDIDATES[0]);
+
+        let selected = select_font_path(Some(configured), |path| path == system);
+
+        assert_eq!(selected.as_deref(), Some(system));
     }
 }
 
