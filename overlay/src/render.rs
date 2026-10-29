@@ -11,7 +11,7 @@ use std::{
 pub const WIDTH: u32 = 460;
 pub const HEIGHT: u32 = 680;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Color(u8, u8, u8, u8);
 
 const INK: Color = Color(230, 236, 239, 255);
@@ -21,6 +21,11 @@ const GREEN: Color = Color(84, 214, 164, 255);
 const AMBER: Color = Color(236, 178, 83, 255);
 const RED: Color = Color(240, 103, 114, 255);
 const BLUE: Color = Color(95, 168, 255, 255);
+const PANEL_RADIUS: i32 = 18;
+const STATUS_RAIL_X: i32 = 2;
+const STATUS_RAIL_WIDTH: i32 = 3;
+const STATUS_RAIL_INSET: i32 = PANEL_RADIUS;
+const STATUS_RAIL_ALPHA: u8 = 150;
 
 // Keep these explicit and deterministic: the overlay starts before a desktop
 // environment is necessarily ready, so font discovery must not depend on an
@@ -72,34 +77,20 @@ impl Renderer {
         transport_error: Option<&str>,
     ) {
         canvas.fill(0);
+        let (state, state_color) = connection_state(snapshot, transport_error);
         rounded_rect(
             canvas,
             0,
             0,
             WIDTH as i32,
             HEIGHT as i32,
-            18,
+            PANEL_RADIUS,
             Color(12, 16, 19, 238),
         );
-        fill_rect(canvas, 1, 1, 5, HEIGHT as i32 - 2, Color(66, 122, 142, 220));
+        status_rail(canvas, state_color);
         self.text(canvas, 26, 24, 11.0, MUTED, "LOCAL OPERATIONS", 400);
         self.text(canvas, 26, 47, 21.0, INK, "AGENT PRESENCE", 280);
 
-        let state = if transport_error.is_some() {
-            "OFFLINE"
-        } else if snapshot.is_none() {
-            "WAITING"
-        } else if snapshot.is_some_and(|value| value.stale || !value.connected) {
-            "STALE"
-        } else {
-            "LIVE"
-        };
-        let state_color = match state {
-            "LIVE" => GREEN,
-            "STALE" => AMBER,
-            "OFFLINE" => RED,
-            _ => FAINT,
-        };
         status_pill(canvas, 362, 42, state, state_color, &self.font);
         fill_rect(canvas, 26, 82, 408, 1, Color(47, 58, 64, 255));
 
@@ -270,7 +261,11 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{SYSTEM_FONT_CANDIDATES, select_font_path};
+    use super::{
+        AMBER, FAINT, GREEN, HEIGHT, RED, STATUS_RAIL_INSET, STATUS_RAIL_WIDTH, STATUS_RAIL_X,
+        SYSTEM_FONT_CANDIDATES, WIDTH, connection_state, select_font_path, status_rail,
+    };
+    use crate::model::Snapshot;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -304,6 +299,71 @@ mod tests {
 
         assert_eq!(selected.as_deref(), Some(system));
     }
+
+    #[test]
+    fn connection_state_drives_pill_and_rail_palette() {
+        let live = Snapshot {
+            connected: true,
+            ..Snapshot::default()
+        };
+        let stale = Snapshot {
+            connected: true,
+            stale: true,
+            ..Snapshot::default()
+        };
+
+        assert_eq!(connection_state(Some(&live), None), ("LIVE", GREEN));
+        assert_eq!(connection_state(Some(&stale), None), ("STALE", AMBER));
+        assert_eq!(
+            connection_state(None, Some("unavailable")),
+            ("OFFLINE", RED)
+        );
+        assert_eq!(connection_state(None, None), ("WAITING", FAINT));
+    }
+
+    #[test]
+    fn status_rail_is_inset_and_has_rounded_caps() {
+        let mut canvas = vec![0; (WIDTH * HEIGHT * 4) as usize];
+        status_rail(&mut canvas, GREEN);
+
+        let alpha_at = |x: i32, y: i32| canvas[((y as u32 * WIDTH + x as u32) * 4 + 3) as usize];
+        let center_x = STATUS_RAIL_X + STATUS_RAIL_WIDTH / 2;
+        let bottom = HEIGHT as i32 - STATUS_RAIL_INSET - 1;
+
+        assert_eq!(alpha_at(center_x, STATUS_RAIL_INSET - 1), 0);
+        assert_ne!(alpha_at(center_x, STATUS_RAIL_INSET), 0);
+        assert_eq!(alpha_at(STATUS_RAIL_X, STATUS_RAIL_INSET), 0);
+        assert_ne!(alpha_at(STATUS_RAIL_X, STATUS_RAIL_INSET + 1), 0);
+        assert_ne!(alpha_at(center_x, bottom), 0);
+        assert_eq!(alpha_at(center_x, bottom + 1), 0);
+    }
+}
+
+fn connection_state(
+    snapshot: Option<&Snapshot>,
+    transport_error: Option<&str>,
+) -> (&'static str, Color) {
+    if transport_error.is_some() {
+        ("OFFLINE", RED)
+    } else if snapshot.is_none() {
+        ("WAITING", FAINT)
+    } else if snapshot.is_some_and(|value| value.stale || !value.connected) {
+        ("STALE", AMBER)
+    } else {
+        ("LIVE", GREEN)
+    }
+}
+
+fn status_rail(canvas: &mut [u8], color: Color) {
+    rounded_rect(
+        canvas,
+        STATUS_RAIL_X,
+        STATUS_RAIL_INSET,
+        STATUS_RAIL_WIDTH,
+        HEIGHT as i32 - STATUS_RAIL_INSET * 2,
+        STATUS_RAIL_WIDTH / 2,
+        Color(color.0, color.1, color.2, STATUS_RAIL_ALPHA),
+    );
 }
 
 fn ellipsize(text: &str, max_chars: usize) -> String {
