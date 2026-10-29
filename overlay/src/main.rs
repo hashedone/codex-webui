@@ -42,6 +42,7 @@ const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:19889/api/agents/snapshot";
 const POLL_INTERVAL: Duration = Duration::from_millis(1500);
 
 fn configure_layer_surface(layer: &LayerSurface) {
+    layer.set_layer(Layer::Overlay);
     layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_exclusive_zone(-1);
