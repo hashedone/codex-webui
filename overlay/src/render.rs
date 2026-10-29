@@ -22,10 +22,9 @@ const AMBER: Color = Color(236, 178, 83, 255);
 const RED: Color = Color(240, 103, 114, 255);
 const BLUE: Color = Color(95, 168, 255, 255);
 const PANEL_RADIUS: i32 = 18;
-const STATUS_RAIL_X: i32 = 2;
-const STATUS_RAIL_WIDTH: i32 = 3;
-const STATUS_RAIL_INSET: i32 = PANEL_RADIUS;
-const STATUS_RAIL_ALPHA: u8 = 150;
+const PANEL_OUTLINE: Color = Color(105, 125, 135, 92);
+const PANEL_FILL: Color = Color(12, 16, 19, 238);
+const PANEL_OUTLINE_WIDTH: i32 = 1;
 
 // Keep these explicit and deterministic: the overlay starts before a desktop
 // environment is necessarily ready, so font discovery must not depend on an
@@ -78,16 +77,7 @@ impl Renderer {
     ) {
         canvas.fill(0);
         let (state, state_color) = connection_state(snapshot, transport_error);
-        rounded_rect(
-            canvas,
-            0,
-            0,
-            WIDTH as i32,
-            HEIGHT as i32,
-            PANEL_RADIUS,
-            Color(12, 16, 19, 238),
-        );
-        status_rail(canvas, state_color);
+        panel(canvas);
         self.text(canvas, 26, 24, 11.0, MUTED, "LOCAL OPERATIONS", 400);
         self.text(canvas, 26, 47, 21.0, INK, "AGENT PRESENCE", 280);
 
@@ -262,8 +252,8 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::{
-        AMBER, FAINT, GREEN, HEIGHT, RED, STATUS_RAIL_INSET, STATUS_RAIL_WIDTH, STATUS_RAIL_X,
-        SYSTEM_FONT_CANDIDATES, WIDTH, connection_state, select_font_path, status_rail,
+        AMBER, FAINT, GREEN, HEIGHT, PANEL_FILL, PANEL_OUTLINE, RED, SYSTEM_FONT_CANDIDATES, WIDTH,
+        connection_state, panel, select_font_path,
     };
     use crate::model::Snapshot;
     use std::path::{Path, PathBuf};
@@ -301,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn connection_state_drives_pill_and_rail_palette() {
+    fn connection_state_drives_pill_palette() {
         let live = Snapshot {
             connected: true,
             ..Snapshot::default()
@@ -322,20 +312,24 @@ mod tests {
     }
 
     #[test]
-    fn status_rail_is_inset_and_has_rounded_caps() {
+    fn panel_outline_follows_rounded_panel_geometry() {
         let mut canvas = vec![0; (WIDTH * HEIGHT * 4) as usize];
-        status_rail(&mut canvas, GREEN);
+        panel(&mut canvas);
 
         let alpha_at = |x: i32, y: i32| canvas[((y as u32 * WIDTH + x as u32) * 4 + 3) as usize];
-        let center_x = STATUS_RAIL_X + STATUS_RAIL_WIDTH / 2;
-        let bottom = HEIGHT as i32 - STATUS_RAIL_INSET - 1;
+        let center_x = WIDTH as i32 / 2;
+        let center_y = HEIGHT as i32 / 2;
 
-        assert_eq!(alpha_at(center_x, STATUS_RAIL_INSET - 1), 0);
-        assert_ne!(alpha_at(center_x, STATUS_RAIL_INSET), 0);
-        assert_eq!(alpha_at(STATUS_RAIL_X, STATUS_RAIL_INSET), 0);
-        assert_ne!(alpha_at(STATUS_RAIL_X, STATUS_RAIL_INSET + 1), 0);
-        assert_ne!(alpha_at(center_x, bottom), 0);
-        assert_eq!(alpha_at(center_x, bottom + 1), 0);
+        assert_eq!(alpha_at(0, 0), 0, "outer corner stays transparent");
+        assert_eq!(alpha_at(5, 6), PANEL_OUTLINE.3);
+        assert_eq!(alpha_at(6, 6), PANEL_FILL.3);
+        assert_eq!(alpha_at(center_x, 0), PANEL_OUTLINE.3);
+        assert_eq!(alpha_at(center_x, 1), PANEL_FILL.3);
+        assert_eq!(alpha_at(0, center_y), PANEL_OUTLINE.3);
+        assert_eq!(alpha_at(1, center_y), PANEL_FILL.3);
+        assert_eq!(alpha_at(center_x, center_y), PANEL_FILL.3);
+        assert_eq!(alpha_at(center_x, HEIGHT as i32 - 1), PANEL_OUTLINE.3);
+        assert_eq!(alpha_at(WIDTH as i32 - 1, center_y), PANEL_OUTLINE.3);
     }
 }
 
@@ -354,15 +348,24 @@ fn connection_state(
     }
 }
 
-fn status_rail(canvas: &mut [u8], color: Color) {
+fn panel(canvas: &mut [u8]) {
     rounded_rect(
         canvas,
-        STATUS_RAIL_X,
-        STATUS_RAIL_INSET,
-        STATUS_RAIL_WIDTH,
-        HEIGHT as i32 - STATUS_RAIL_INSET * 2,
-        STATUS_RAIL_WIDTH / 2,
-        Color(color.0, color.1, color.2, STATUS_RAIL_ALPHA),
+        0,
+        0,
+        WIDTH as i32,
+        HEIGHT as i32,
+        PANEL_RADIUS,
+        PANEL_OUTLINE,
+    );
+    replace_rounded_rect(
+        canvas,
+        PANEL_OUTLINE_WIDTH,
+        PANEL_OUTLINE_WIDTH,
+        WIDTH as i32 - PANEL_OUTLINE_WIDTH * 2,
+        HEIGHT as i32 - PANEL_OUTLINE_WIDTH * 2,
+        PANEL_RADIUS - PANEL_OUTLINE_WIDTH,
+        PANEL_FILL,
     );
 }
 
@@ -463,6 +466,42 @@ fn rounded_rect(
             };
             if dx * dx + dy * dy <= radius * radius {
                 blend(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+fn replace_rounded_rect(
+    canvas: &mut [u8],
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    radius: i32,
+    color: Color,
+) {
+    for py in y..y + height {
+        for px in x..x + width {
+            let dx = if px < x + radius {
+                x + radius - px
+            } else if px >= x + width - radius {
+                px - (x + width - radius - 1)
+            } else {
+                0
+            };
+            let dy = if py < y + radius {
+                y + radius - py
+            } else if py >= y + height - radius {
+                py - (y + height - radius - 1)
+            } else {
+                0
+            };
+            if dx * dx + dy * dy <= radius * radius {
+                let index = ((py as u32 * WIDTH + px as u32) * 4) as usize;
+                for (offset, channel) in [(0, color.2), (1, color.1), (2, color.0)] {
+                    canvas[index + offset] = (channel as u16 * color.3 as u16 / 255) as u8;
+                }
+                canvas[index + 3] = color.3;
             }
         }
     }
