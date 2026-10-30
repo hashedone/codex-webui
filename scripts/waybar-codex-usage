@@ -1,0 +1,59 @@
+#!/usr/bin/env bun
+
+const DEFAULT_ENDPOINT = "http://127.0.0.1:8899/api/account/rate-limits";
+
+function humanDuration(minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "rolling window";
+  if (minutes % 10_080 === 0) return `${minutes / 10_080}w`;
+  if (minutes % 1_440 === 0) return `${minutes / 1_440}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
+function resetLabel(epochSeconds) {
+  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return "reset unknown";
+  return `resets ${new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  }).format(new Date(epochSeconds * 1000))}`;
+}
+
+export function offlineWaybarOutput(message = "Codex usage unavailable") {
+  return { text: " --", tooltip: message, class: "offline", percentage: 0 };
+}
+
+export function formatRateLimits(payload, nowSeconds = Date.now() / 1000) {
+  const limits = Array.isArray(payload?.limits)
+    ? payload.limits.filter(limit => limit && Number.isFinite(limit.usedPercent))
+    : [];
+  if (!limits.length) return offlineWaybarOutput("Codex usage unavailable: no rate-limit windows");
+  const active = limits.filter(limit => !Number.isFinite(limit.resetsAt) || limit.resetsAt > nowSeconds);
+  const selected = (active.length ? active : limits).reduce((most, limit) =>
+    limit.usedPercent > most.usedPercent ? limit : most);
+  const percent = Math.max(0, Math.min(100, Math.round(selected.usedPercent)));
+  const className = percent >= 90 ? "critical" : percent >= 70 ? "warning" : "normal";
+  const tooltip = limits.map(limit => {
+    const name = typeof limit.limitName === "string" && limit.limitName ? limit.limitName : "Codex";
+    const kind = limit.windowKind === "secondary" ? "secondary" : "primary";
+    const used = Math.max(0, Math.min(100, Math.round(limit.usedPercent)));
+    return `${name} · ${kind} ${humanDuration(limit.windowDurationMins)}: ${used}% used · ${resetLabel(limit.resetsAt)}`;
+  }).join("\n");
+  return { text: ` ${percent}%`, tooltip, class: className, percentage: percent };
+}
+
+export async function main({
+  endpoint = process.env.CODEX_WEBUI_RATE_LIMITS_URL || DEFAULT_ENDPOINT,
+  fetchImpl = fetch,
+} = {}) {
+  try {
+    const headers = { accept: "application/json" };
+    if (process.env.CODEX_WEBUI_ACCESS_TOKEN) headers.authorization = `Bearer ${process.env.CODEX_WEBUI_ACCESS_TOKEN}`;
+    const response = await fetchImpl(endpoint, { headers, cache: "no-store", signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    console.log(JSON.stringify(formatRateLimits(await response.json())));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.log(JSON.stringify(offlineWaybarOutput(`Codex usage unavailable (${detail})`)));
+  }
+}
+
+if (import.meta.main) await main();

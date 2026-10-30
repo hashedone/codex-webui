@@ -310,3 +310,28 @@ Source code is available under the [MIT License](./LICENSE). Third-party compone
 ### Agent command center
 
 Open **Agent command center** in the sidebar, or `/?view=agents`, for a live task tree on the dashboard-owned app-server. Desktop sessions and other Codex processes are outside its scope. See [ownership, installed-CLI comparison, and verification](docs/agent-command-center.md) for the supported contract and known history limitation.
+
+### Codex rate limits for Waybar
+
+Authenticated local callers can read a bounded, sanitized projection of the Codex account windows from `GET /api/account/rate-limits`. The response is additive and unversioned for same-repository clients:
+
+```json
+{
+  "refreshedAt": "2026-10-30T12:00:00.000Z",
+  "limits": [{
+    "limitId": "codex",
+    "limitName": "Codex",
+    "windowKind": "primary",
+    "usedPercent": 42,
+    "windowDurationMins": 300,
+    "resetsAt": 1793361600,
+    "planType": "pro"
+  }]
+}
+```
+
+The endpoint uses the existing HTTP authentication rules, accepts only `GET`, sends `Cache-Control: no-store`, and returns `503` with `Retry-After` when the app-server account data is unavailable. It intentionally omits account identifiers, reset-credit identifiers, credentials, and the rest of the raw account payload. Results are refreshed from the app-server at most once every 45 seconds; the list is capped at 64 windows, so pagination is not applicable.
+
+`scripts/waybar-codex-usage` converts the endpoint to Waybar's JSON format. It defaults to `http://127.0.0.1:8899/api/account/rate-limits`; set `CODEX_WEBUI_RATE_LIMITS_URL` to use another same-repository endpoint and `CODEX_WEBUI_ACCESS_TOKEN` when the target requires bearer authentication. The formatter prints a normal offline state instead of failing the Waybar module.
+
+The upstream method and window fields are documented in the [official Codex app-server documentation](https://learn.chatgpt.com/docs/app-server). The checked-in implementation was also verified against the installed CLI's generated experimental TypeScript schema for `account/rateLimits/read`.

@@ -16,6 +16,7 @@ function send(message: any) {
 }
 
 let loadedInventoryReads = 0;
+let rateLimitReads = 0;
 createInterface({ input: process.stdin }).on("line", line => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
@@ -23,6 +24,28 @@ createInterface({ input: process.stdin }).on("line", line => {
     return;
   }
   if (message.method === "initialized") return;
+  if (message.method === "account/rateLimits/read") {
+    rateLimitReads++;
+    if (process.env.CODEX_WEBUI_TEST_RATE_LIMIT_FAILURE === "1") {
+      send({ id: message.id, error: { code: -32000, message: "test rate-limit failure" } });
+      return;
+    }
+    send({ id: message.id, result: {
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: "codex",
+          limitName: "Codex",
+          primary: { usedPercent: 74 + rateLimitReads, windowDurationMins: 300, resetsAt: 1_900_000_000 },
+          secondary: { usedPercent: 42, windowDurationMins: 10_080, resetsAt: 1_900_100_000 },
+          planType: "pro",
+          credits: { balance: "must-not-leak" },
+        },
+      },
+      rateLimits: { limitId: "legacy-must-not-win", primary: { usedPercent: 99, windowDurationMins: 60, resetsAt: 1_900_000_000 } },
+      rateLimitResetCredits: { credits: [{ id: "must-not-leak" }] },
+    } });
+    return;
+  }
   if (message.method === "thread/loaded/list") {
     loadedInventoryReads++;
     const emptyFirstInventory = process.env.CODEX_WEBUI_TEST_EMPTY_AGENT_INVENTORY_ONCE === "1" && loadedInventoryReads === 1;

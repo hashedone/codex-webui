@@ -18,6 +18,7 @@ import { AgentOverview } from "./agent-overview.js";
 import { LocalCodexPresence } from "./local-presence.js";
 import { PresenceHub } from "./presence-hub.js";
 import { LiveSessionStore } from "./live-session-service.js";
+import { createRateLimitLoader } from "./rate-limit-service.js";
 import {
   createPasswordSession,
   createStoredPassword,
@@ -93,6 +94,7 @@ const accountLoader = createAccountIdentityLoader(async (refresh) => {
   const account = await request("account/read", { refreshToken: refresh });
   return resolveAccountIdentity(account);
 });
+const rateLimitLoader = createRateLimitLoader(() => request("account/rateLimits/read", { excludeResetCreditDetails: true }));
 
 function startCodex() {
   if (shuttingDown) return;
@@ -125,6 +127,7 @@ function startCodex() {
   child.on("exit", (code, signal) => {
     connected = false;
     accountLoader.invalidate();
+    rateLimitLoader.invalidate();
     reviewDiffs.clear();
     broadcast({ type: "bridge/status", status: "disconnected", code, signal });
     for (const item of pending.values()) item.reject(new Error("Codex app-server exited"));
@@ -217,7 +220,11 @@ function handleCodex(message: any) {
       if (resolved) sendToRecipients(resolved.recipients, { type: "codex/notification", payload: message });
       return;
     }
-    if (message.method === "account/updated") accountLoader.invalidate();
+    if (message.method === "account/updated") {
+      accountLoader.invalidate();
+      rateLimitLoader.invalidate();
+    }
+    if (message.method === "account/rateLimits/updated") rateLimitLoader.invalidate();
     if (message.method === "turn/diff/updated") reviewDiffs.record(message.params || {});
     if (message.method === "item/fileChange/patchUpdated") recordFileChangeDiff(message.params || {});
     if (message.method === "item/completed" && message.params?.item?.type === "fileChange") {
@@ -629,6 +636,38 @@ const server = createServer(async (req, res) => {
         "x-content-type-options": "nosniff",
       });
       res.end(JSON.stringify({ error: "Agent snapshot unavailable" }));
+    }
+    return;
+  }
+  if (url.pathname === "/api/account/rate-limits") {
+    if (req.method !== "GET") {
+      res.writeHead(405, {
+        "content-type": "application/json; charset=utf-8",
+        allow: "GET",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({ error: { code: "method_not_allowed", message: "Method not allowed" } }));
+      return;
+    }
+    try {
+      const rateLimits = await rateLimitLoader.get();
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "cross-origin-resource-policy": "same-origin",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify(rateLimits));
+    } catch (error) {
+      console.warn("[codex-webui] rate-limit request failed:", error instanceof Error ? error.message : String(error));
+      res.writeHead(503, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "retry-after": "30",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({ error: { code: "rate_limits_unavailable", message: "Codex rate limits are unavailable" } }));
     }
     return;
   }
