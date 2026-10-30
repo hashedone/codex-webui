@@ -1,4 +1,5 @@
 use crate::model::{Snapshot, display_rows};
+use crate::slots::SlotBook;
 use fontdue::{
     Font, FontSettings,
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
@@ -74,6 +75,7 @@ impl Renderer {
         canvas: &mut [u8],
         snapshot: Option<&Snapshot>,
         transport_error: Option<&str>,
+        slots: &SlotBook,
     ) {
         canvas.fill(0);
         let (state, state_color) = connection_state(snapshot, transport_error);
@@ -92,7 +94,7 @@ impl Renderer {
             );
             return;
         };
-        let rows = display_rows(snapshot);
+        let rows = display_rows(snapshot, slots);
         if rows.is_empty() {
             self.empty(
                 canvas,
@@ -115,7 +117,11 @@ impl Renderer {
                 if rendered > 0 {
                     y += 10;
                 }
-                self.text(canvas, 26, y, 10.0, BLUE, &project.to_uppercase(), 390);
+                let heading = row.slot.map_or_else(
+                    || project.to_uppercase(),
+                    |slot| format!("[{slot}]  {}", project.to_uppercase()),
+                );
+                self.text(canvas, 26, y, 10.0, BLUE, &heading, 390);
                 y += 24;
             }
             let x = 27 + (row.depth.min(3) as i32 * 22);
