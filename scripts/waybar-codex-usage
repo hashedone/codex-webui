@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 export const DEFAULT_ENDPOINT = "http://127.0.0.1:19889/api/account/rate-limits";
+const ICON_VALUE_GAP = "\u2002";
 
 function humanDuration(minutes) {
   if (!Number.isFinite(minutes) || minutes <= 0) return "rolling window";
@@ -18,7 +19,7 @@ function resetLabel(epochSeconds) {
 }
 
 export function offlineWaybarOutput(message = "Codex usage unavailable") {
-  return { text: " --", tooltip: message, class: "offline", percentage: 0 };
+  return { text: `${ICON_VALUE_GAP}--`, tooltip: message, class: "offline", percentage: 0 };
 }
 
 export function formatRateLimits(payload, nowSeconds = Date.now() / 1000) {
@@ -37,7 +38,7 @@ export function formatRateLimits(payload, nowSeconds = Date.now() / 1000) {
     const used = Math.max(0, Math.min(100, Math.round(limit.usedPercent)));
     return `${name} · ${kind} ${humanDuration(limit.windowDurationMins)}: ${used}% used · ${resetLabel(limit.resetsAt)}`;
   }).join("\n");
-  return { text: ` ${percent}%`, tooltip, class: className, percentage: percent };
+  return { text: `${ICON_VALUE_GAP}${percent}%`, tooltip, class: className, percentage: percent };
 }
 
 export async function main({
