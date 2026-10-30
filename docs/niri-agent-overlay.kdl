@@ -7,4 +7,18 @@ binds {
     Mod+A repeat=false allow-inhibiting=false {
         spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "toggle"
     }
+    // Read every occupied root slot in stable numeric order.
+    Mod+S repeat=false allow-inhibiting=false {
+        spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-summary"
+    }
+    // Read one root thread and all descendants shown beneath it.
+    Mod+1 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "1"; }
+    Mod+2 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "2"; }
+    Mod+3 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "3"; }
+    Mod+4 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "4"; }
+    Mod+5 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "5"; }
+    Mod+6 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "6"; }
+    Mod+7 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "7"; }
+    Mod+8 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "8"; }
+    Mod+9 repeat=false allow-inhibiting=false { spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "9"; }
 }

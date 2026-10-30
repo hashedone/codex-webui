@@ -2,10 +2,12 @@
 
 The native overlay is a resident, display-only companion to Agent Command Center. It reads the
 redacted local snapshot from Codex WebUI, renders the project/agent/subagent tree, and reconnects
-when the WebUI restarts. Its Wayland surface does not request keyboard focus and has no pointer or
+when the WebUI restarts. Root threads receive stable slots `[1]` through `[9]`; descendants remain
+nested beneath their root. Its Wayland surface does not request keyboard focus and has no pointer or
 touch input region.
 
-This first slice deliberately has no agent input, resume action, voice, or push-to-talk.
+The overlay can read deterministic Polish status summaries through a local TTS process. It still has
+no agent input, resume action, recording, transcription, or push-to-talk.
 
 ## Install and build
 
@@ -29,7 +31,13 @@ own checkout. This keeps the niri configuration stable across rebuilds. Set
 The overlay expects Codex WebUI at `http://127.0.0.1:19889/api/agents/snapshot`. Set
 `CODEX_OVERLAY_ENDPOINT` to override that URL. Control commands use
 `$XDG_RUNTIME_DIR/codex-agent-overlay.sock`; set `CODEX_OVERLAY_SOCKET` to override the socket.
+Slot assignments persist in `$XDG_STATE_HOME/codex-webui/agent-overlay-slots.json` (or
+`~/.local/state/codex-webui/agent-overlay-slots.json`); set `CODEX_OVERLAY_SLOTS` to override it.
 The resident keeps running and shows an offline/stale state when WebUI is unavailable.
+
+Speech defaults to `spd-say -l pl`. Set `CODEX_OVERLAY_TTS_LOCALE` to change the locale,
+`CODEX_OVERLAY_TTS_BACKEND=espeak-ng` to use eSpeak NG, or the backend to `disabled` to turn speech
+off. Speech is launched without a shell. A newer read command cancels and replaces the previous one.
 
 ## Start and toggle from niri
 
@@ -43,15 +51,26 @@ binds {
     Mod+A repeat=false allow-inhibiting=false {
         spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "toggle"
     }
+    Mod+S repeat=false allow-inhibiting=false {
+        spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-summary"
+    }
+    Mod+1 repeat=false allow-inhibiting=false {
+        spawn "/home/hashed/git/codex-webui/scripts/agent-overlay" "read-slot" "1"
+    }
+    // Repeat the same pattern for Mod+2 through Mod+9.
 }
 ```
 
-If a `binds` block already exists, add only the `Mod+A` entry to it. Do not add a second
+If a `binds` block already exists, add only these entries to it. Do not add a second
 `binds` block. The `repeat=false` property ensures one key press produces exactly one toggle, while
 `allow-inhibiting=false` keeps the toggle available even when a game has activated the
 keyboard-shortcuts inhibitor. Change the key chord if it conflicts with an existing binding.
 
 `spawn-at-startup` starts the resident hidden on the next niri session; `Mod+A` reveals it on demand.
+`Mod+1` through `Mod+9` read the matching root and visible descendants. `Mod+S` reads a compact
+summary of every occupied slot in numeric order. Status or snapshot-order changes never move a
+thread, and assignments survive overlay restarts. A new root takes the lowest unused slot; only when
+all nine are reserved may the oldest absent root's slot be reused.
 After editing the config, validate it before reloading:
 
 ```bash
@@ -65,6 +84,8 @@ scripts/agent-overlay toggle
 scripts/agent-overlay show
 scripts/agent-overlay hide
 scripts/agent-overlay status
+scripts/agent-overlay read-slot 1
+scripts/agent-overlay read-summary
 ```
 
 Running `scripts/agent-overlay` without a subcommand starts the resident in the foreground.
