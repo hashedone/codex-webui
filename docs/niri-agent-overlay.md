@@ -35,9 +35,37 @@ Slot assignments persist in `$XDG_STATE_HOME/codex-webui/agent-overlay-slots.jso
 `~/.local/state/codex-webui/agent-overlay-slots.json`); set `CODEX_OVERLAY_SLOTS` to override it.
 The resident keeps running and shows an offline/stale state when WebUI is unavailable.
 
-Speech defaults to `spd-say -l pl`. Set `CODEX_OVERLAY_TTS_LOCALE` to change the locale,
-`CODEX_OVERLAY_TTS_BACKEND=espeak-ng` to use eSpeak NG, or the backend to `disabled` to turn speech
-off. Speech is launched without a shell. A newer read command cancels and replaces the previous one.
+Speech uses the local neural Piper runtime with the `pl_PL-darkman-medium` voice. Install its pinned,
+checksum-verified runtime and voice assets once (about 85 MB installed); the model itself is not kept
+in Git:
+
+```bash
+scripts/install-overlay-piper
+```
+
+The default installation is `$XDG_DATA_HOME/codex-webui/piper` (or
+`~/.local/share/codex-webui/piper`). `CODEX_OVERLAY_PIPER_HOME` changes the installer destination;
+when doing so, also set `CODEX_OVERLAY_PIPER_BIN`, `CODEX_OVERLAY_PIPER_MODEL`, and
+`CODEX_OVERLAY_PIPER_CONFIG` for the resident. `CODEX_OVERLAY_AUDIO_PLAYER` defaults to
+`/usr/bin/pw-play`. Set `CODEX_OVERLAY_TTS_BACKEND=disabled` to explicitly turn speech off.
+Speech Dispatcher and eSpeak are deliberately not fallback backends: missing neural assets or audio
+playback produce an error response and silence.
+
+The shared speech-only pronunciation map is [`overlay/pronunciations.json`](../overlay/pronunciations.json).
+Visible project and task labels are never changed. Personal exact-name aliases and dictionary entries
+can be added in `~/.config/codex-webui/spoken-names.json`; they override shared entries and use the
+same JSON shape:
+
+```json
+{
+  "aliases": { "my-project": "maj prodżekt" },
+  "dictionary": { "workflow": "łorkfloł" }
+}
+```
+
+Set `CODEX_OVERLAY_TTS_ALIASES` to use another personal file. Kebab case, snake case, camel case,
+and all-uppercase acronyms are normalized after exact aliases are applied. Synthesis and playback run
+off the controller thread. A newer read command cancels and replaces the previous one.
 
 ## Start and toggle from niri
 
