@@ -1,26 +1,47 @@
 use crate::pronunciation::Pronouncer;
+use serde_json::{Value, json};
 use std::{
     env, fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::mpsc::{self, Sender},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug)]
 enum Backend {
-    Piper {
-        program: PathBuf,
+    Supertonic {
+        python: PathBuf,
+        worker: PathBuf,
         model: PathBuf,
-        config: PathBuf,
         player: PathBuf,
         audio: PathBuf,
     },
     Disabled(String),
     Unavailable(String),
+}
+
+#[derive(Debug)]
+enum WorkerEvent {
+    Ready,
+    Done,
+    Error(String),
+}
+
+struct Synthesizer {
+    child: Child,
+    stdin: ChildStdin,
+    events: Receiver<WorkerEvent>,
+}
+
+impl Drop for Synthesizer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 pub struct Speaker {
@@ -43,92 +64,7 @@ impl Speaker {
 
     fn new(backend: Backend, pronouncer: Pronouncer, unavailable: Option<String>) -> Self {
         let (sender, receiver) = mpsc::channel::<String>();
-        let worker_backend = backend.clone();
-        thread::spawn(move || {
-            let mut running: Option<Child> = None;
-            let mut pending_audio = audio_path(&worker_backend);
-            let mut queued = None;
-            loop {
-                let mut text = match queued.take() {
-                    Some(text) => text,
-                    None => match receiver.recv() {
-                        Ok(text) => text,
-                        Err(_) => return,
-                    },
-                };
-                for newer in receiver.try_iter() {
-                    text = newer;
-                }
-                cancel(&mut running, pending_audio.as_deref());
-                let (child, audio) = match start_piper(&worker_backend, &text) {
-                    Ok(started) => started,
-                    Err(error) => {
-                        eprintln!("codex-agent-overlay: neural speech unavailable: {error}");
-                        continue;
-                    }
-                };
-                running = Some(child);
-                pending_audio = Some(audio);
-
-                loop {
-                    match receiver.recv_timeout(Duration::from_millis(50)) {
-                        Ok(mut newer) => {
-                            for latest in receiver.try_iter() {
-                                newer = latest;
-                            }
-                            cancel(&mut running, pending_audio.as_deref());
-                            match start_piper(&worker_backend, &newer) {
-                                Ok((child, audio)) => {
-                                    running = Some(child);
-                                    pending_audio = Some(audio);
-                                }
-                                Err(error) => {
-                                    eprintln!(
-                                        "codex-agent-overlay: neural speech unavailable: {error}"
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            let Some(status) = running
-                                .as_mut()
-                                .and_then(|process| process.try_wait().ok().flatten())
-                            else {
-                                continue;
-                            };
-                            running = None;
-                            if !status.success() {
-                                eprintln!(
-                                    "codex-agent-overlay: Piper exited with {status}; speech remains silent"
-                                );
-                                cleanup(pending_audio.as_deref());
-                                break;
-                            }
-                            let Some(audio) = pending_audio.as_ref() else {
-                                break;
-                            };
-                            match start_player(&worker_backend, audio) {
-                                Ok(child) => running = Some(child),
-                                Err(error) => {
-                                    eprintln!(
-                                        "codex-agent-overlay: audio playback failed: {error}"
-                                    );
-                                    cleanup(pending_audio.as_deref());
-                                    break;
-                                }
-                            }
-                            queued = wait_for_playback(&receiver, &mut running, &mut pending_audio);
-                            break;
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            cancel(&mut running, pending_audio.as_deref());
-                            return;
-                        }
-                    }
-                }
-            }
-        });
+        thread::spawn(move || speech_worker(backend, receiver));
         Self {
             sender,
             unavailable,
@@ -146,8 +82,113 @@ impl Speaker {
     }
 }
 
+fn speech_worker(backend: Backend, receiver: Receiver<String>) {
+    let mut synthesizer = None;
+    let mut queued = None;
+    let audio = audio_path(&backend);
+
+    loop {
+        let mut text = match queued.take() {
+            Some(text) => text,
+            None => match receiver.recv() {
+                Ok(text) => text,
+                Err(_) => return,
+            },
+        };
+        drain_latest(&receiver, &mut text);
+        cleanup(audio.as_deref());
+
+        if synthesizer.is_none() {
+            match start_supertonic(&backend) {
+                Ok(process) => synthesizer = Some(process),
+                Err(error) => {
+                    eprintln!("codex-agent-overlay: Supertonic failed to start: {error}");
+                    continue;
+                }
+            }
+            let ready = wait_until_ready(
+                synthesizer.as_mut().expect("synthesizer was just started"),
+                &receiver,
+                &mut text,
+            );
+            if let Err(error) = ready {
+                eprintln!("codex-agent-overlay: Supertonic unavailable: {error}");
+                synthesizer = None;
+                continue;
+            }
+        }
+
+        let request = send_request(
+            synthesizer.as_mut().expect("ready synthesizer"),
+            &text,
+            audio
+                .as_deref()
+                .expect("Supertonic backend has an audio path"),
+        );
+        if let Err(error) = request {
+            eprintln!("codex-agent-overlay: Supertonic request failed: {error}");
+            synthesizer = None;
+            continue;
+        }
+
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(mut newer) => {
+                    drain_latest(&receiver, &mut newer);
+                    // ONNX inference is synchronous. Killing the resident worker is the only
+                    // reliable cancellation boundary; its replacement stays warm afterwards.
+                    synthesizer = None;
+                    cleanup(audio.as_deref());
+                    queued = Some(newer);
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+
+            let event = synthesizer
+                .as_ref()
+                .and_then(|process| process.events.try_recv().ok());
+            match event {
+                Some(WorkerEvent::Done) => {
+                    let mut playback = match start_player(&backend, audio.as_deref().unwrap()) {
+                        Ok(child) => Some(child),
+                        Err(error) => {
+                            eprintln!("codex-agent-overlay: audio playback failed: {error}");
+                            cleanup(audio.as_deref());
+                            break;
+                        }
+                    };
+                    queued = wait_for_playback(&receiver, &mut playback, audio.as_deref());
+                    break;
+                }
+                Some(WorkerEvent::Error(error)) => {
+                    eprintln!("codex-agent-overlay: Supertonic synthesis failed: {error}");
+                    synthesizer = None;
+                    cleanup(audio.as_deref());
+                    break;
+                }
+                Some(WorkerEvent::Ready) | None => {
+                    if synthesizer
+                        .as_mut()
+                        .is_some_and(|process| process.child.try_wait().ok().flatten().is_some())
+                    {
+                        eprintln!(
+                            "codex-agent-overlay: Supertonic worker exited; speech remains silent"
+                        );
+                        synthesizer = None;
+                        cleanup(audio.as_deref());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn backend_from_environment() -> Backend {
-    let selected = env::var("CODEX_OVERLAY_TTS_BACKEND").unwrap_or_else(|_| "piper".to_owned());
+    let selected =
+        env::var("CODEX_OVERLAY_TTS_BACKEND").unwrap_or_else(|_| "supertonic".to_owned());
     if matches!(validate_backend_name(&selected), Ok(false)) {
         return Backend::Disabled("speech is disabled".into());
     }
@@ -155,24 +196,26 @@ fn backend_from_environment() -> Backend {
         return Backend::Unavailable(error);
     }
 
-    let data = data_home();
-    let program = env::var_os("CODEX_OVERLAY_PIPER_BIN")
+    let data = data_home().join("codex-webui/supertonic");
+    let python = env::var_os("CODEX_OVERLAY_SUPERTONIC_PYTHON")
         .map(PathBuf::from)
-        .unwrap_or_else(|| data.join("codex-webui/piper/piper"));
-    let model = env::var_os("CODEX_OVERLAY_PIPER_MODEL")
+        .unwrap_or_else(|| data.join("venv/bin/python"));
+    let worker = env::var_os("CODEX_OVERLAY_SUPERTONIC_WORKER")
         .map(PathBuf::from)
-        .unwrap_or_else(|| data.join("codex-webui/piper/pl_PL-darkman-medium.onnx"));
-    let config = env::var_os("CODEX_OVERLAY_PIPER_CONFIG")
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/supertonic-worker.py")
+        });
+    let model = env::var_os("CODEX_OVERLAY_SUPERTONIC_MODEL")
         .map(PathBuf::from)
-        .unwrap_or_else(|| data.join("codex-webui/piper/pl_PL-darkman-medium.onnx.json"));
+        .unwrap_or_else(|| data.join("model"));
     let player = env::var_os("CODEX_OVERLAY_AUDIO_PLAYER")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/usr/bin/pw-play"));
     let audio = runtime_home().join("codex-agent-overlay-speech.wav");
-    Backend::Piper {
-        program,
+    Backend::Supertonic {
+        python,
+        worker,
         model,
-        config,
         player,
         audio,
     }
@@ -180,10 +223,10 @@ fn backend_from_environment() -> Backend {
 
 fn validate_backend_name(selected: &str) -> Result<bool, String> {
     match selected {
-        "piper" => Ok(true),
+        "supertonic" => Ok(true),
         "disabled" | "none" => Ok(false),
         _ => Err(format!(
-            "unsupported backend {selected:?}; only piper or disabled are accepted"
+            "unsupported backend {selected:?}; only supertonic or disabled are accepted"
         )),
     }
 }
@@ -204,18 +247,33 @@ fn runtime_home() -> PathBuf {
 fn backend_error(backend: &Backend) -> Option<String> {
     match backend {
         Backend::Disabled(reason) | Backend::Unavailable(reason) => Some(reason.clone()),
-        Backend::Piper {
-            program,
+        Backend::Supertonic {
+            python,
+            worker,
             model,
-            config,
             player,
             ..
-        } => validate_file(program, true)
-            .and_then(|_| validate_file(model, false))
-            .and_then(|_| validate_file(config, false))
+        } => validate_file(python, true)
+            .and_then(|_| validate_file(worker, false))
+            .and_then(|_| validate_model(model))
             .and_then(|_| validate_file(player, true))
             .err(),
     }
+}
+
+fn validate_model(model: &Path) -> Result<(), String> {
+    for relative in [
+        "onnx/duration_predictor.onnx",
+        "onnx/text_encoder.onnx",
+        "onnx/tts.json",
+        "onnx/unicode_indexer.json",
+        "onnx/vector_estimator.onnx",
+        "onnx/vocoder.onnx",
+        "voice_styles/F5.json",
+    ] {
+        validate_file(&model.join(relative), false)?;
+    }
+    Ok(())
 }
 
 fn validate_file(path: &Path, executable: bool) -> Result<(), String> {
@@ -235,44 +293,116 @@ fn validate_file(path: &Path, executable: bool) -> Result<(), String> {
 
 fn audio_path(backend: &Backend) -> Option<PathBuf> {
     match backend {
-        Backend::Piper { audio, .. } => Some(audio.clone()),
+        Backend::Supertonic { audio, .. } => Some(audio.clone()),
         _ => None,
     }
 }
 
-fn start_piper(backend: &Backend, text: &str) -> std::io::Result<(Child, PathBuf)> {
-    let Backend::Piper {
-        program,
+fn start_supertonic(backend: &Backend) -> std::io::Result<Synthesizer> {
+    let Backend::Supertonic {
+        python,
+        worker,
         model,
-        config,
-        audio,
         ..
     } = backend
     else {
         return Err(std::io::Error::other("neural speech is unavailable"));
     };
-    cleanup(Some(audio));
-    let mut child = Command::new(program)
-        .args(["--model", path_str(model)?, "--config", path_str(config)?])
-        .args(["--output_file", path_str(audio)?, "--quiet"])
+    let mut child = Command::new(python)
+        .arg(worker)
+        .args([
+            "--model-dir",
+            path_str(model)?,
+            "--voice",
+            "F5",
+            "--lang",
+            "pl",
+        ])
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(error) = stdin
-            .write_all(text.as_bytes())
-            .and_then(|_| stdin.write_all(b"\n"))
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("Supertonic stdin is unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("Supertonic stdout is unavailable"))?;
+    let (sender, events) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let event = match line {
+                Ok(line) => parse_worker_event(&line),
+                Err(error) => WorkerEvent::Error(format!("worker protocol read failed: {error}")),
+            };
+            if sender.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(Synthesizer {
+        child,
+        stdin,
+        events,
+    })
+}
+
+fn parse_worker_event(line: &str) -> WorkerEvent {
+    let parsed: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(error) => return WorkerEvent::Error(format!("invalid worker response: {error}")),
+    };
+    match parsed.get("event").and_then(Value::as_str) {
+        Some("ready") => WorkerEvent::Ready,
+        Some("done") => WorkerEvent::Done,
+        Some("error" | "fatal") => WorkerEvent::Error(
+            parsed
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown worker error")
+                .to_owned(),
+        ),
+        other => WorkerEvent::Error(format!("unknown worker event: {other:?}")),
     }
-    Ok((child, audio.clone()))
+}
+
+fn wait_until_ready(
+    synthesizer: &mut Synthesizer,
+    receiver: &Receiver<String>,
+    latest: &mut String,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        drain_latest(receiver, latest);
+        match synthesizer.events.recv_timeout(Duration::from_millis(50)) {
+            Ok(WorkerEvent::Ready) => return Ok(()),
+            Ok(WorkerEvent::Error(error)) => return Err(error),
+            Ok(WorkerEvent::Done) => return Err("worker completed before it was ready".into()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("worker protocol disconnected during startup".into());
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if synthesizer.child.try_wait().ok().flatten().is_some() {
+            return Err("worker exited during model load".into());
+        }
+    }
+    Err("worker model load timed out after 60 seconds".into())
+}
+
+fn send_request(synthesizer: &mut Synthesizer, text: &str, audio: &Path) -> std::io::Result<()> {
+    serde_json::to_writer(
+        &mut synthesizer.stdin,
+        &json!({"text": text, "output": audio}),
+    )?;
+    synthesizer.stdin.write_all(b"\n")?;
+    synthesizer.stdin.flush()
 }
 
 fn start_player(backend: &Backend, audio: &Path) -> std::io::Result<Child> {
-    let Backend::Piper { player, .. } = backend else {
+    let Backend::Supertonic { player, .. } = backend else {
         return Err(std::io::Error::other("neural speech is unavailable"));
     };
     Command::new(player)
@@ -288,18 +418,22 @@ fn path_str(path: &Path) -> std::io::Result<&str> {
         .ok_or_else(|| std::io::Error::other("speech path is not valid UTF-8"))
 }
 
+fn drain_latest(receiver: &Receiver<String>, latest: &mut String) {
+    for newer in receiver.try_iter() {
+        *latest = newer;
+    }
+}
+
 fn wait_for_playback(
-    receiver: &mpsc::Receiver<String>,
+    receiver: &Receiver<String>,
     running: &mut Option<Child>,
-    audio: &mut Option<PathBuf>,
+    audio: Option<&Path>,
 ) -> Option<String> {
     while running.is_some() {
         match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(mut newer) => {
-                for latest in receiver.try_iter() {
-                    newer = latest;
-                }
-                cancel(running, audio.as_deref());
+                drain_latest(receiver, &mut newer);
+                cancel_playback(running, audio);
                 return Some(newer);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -308,11 +442,11 @@ fn wait_for_playback(
                     .is_some_and(|process| process.try_wait().ok().flatten().is_some())
                 {
                     *running = None;
-                    cleanup(audio.as_deref());
+                    cleanup(audio);
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                cancel(running, audio.as_deref());
+                cancel_playback(running, audio);
                 return None;
             }
         }
@@ -320,7 +454,7 @@ fn wait_for_playback(
     None
 }
 
-fn cancel(child: &mut Option<Child>, audio: Option<&Path>) {
+fn cancel_playback(child: &mut Option<Child>, audio: Option<&Path>) {
     if let Some(mut process) = child.take() {
         let _ = process.kill();
         let _ = process.wait();
@@ -331,13 +465,18 @@ fn cancel(child: &mut Option<Child>, audio: Option<&Path>) {
 fn cleanup(audio: Option<&Path>) {
     if let Some(path) = audio {
         let _ = fs::remove_file(path);
+        if let (Some(stem), Some(extension)) = (
+            path.file_stem().and_then(|name| name.to_str()),
+            path.extension().and_then(|name| name.to_str()),
+        ) {
+            let _ = fs::remove_file(path.with_file_name(format!(".{stem}.tmp.{extension}")));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn unavailable_neural_backend_reports_error_and_stays_silent() {
@@ -365,12 +504,29 @@ mod tests {
     }
 
     #[test]
-    fn legacy_formant_backends_are_not_available_as_fallbacks() {
+    fn only_supertonic_is_available_as_the_neural_backend() {
+        assert_eq!(validate_backend_name("supertonic"), Ok(true));
         assert!(
-            validate_backend_name("spd-say")
+            validate_backend_name("piper")
                 .unwrap_err()
-                .contains("only piper")
+                .contains("only supertonic")
         );
         assert!(validate_backend_name("espeak-ng").is_err());
+    }
+
+    #[test]
+    fn worker_protocol_surfaces_explicit_errors() {
+        assert!(matches!(
+            parse_worker_event(r#"{"event":"ready"}"#),
+            WorkerEvent::Ready
+        ));
+        assert!(matches!(
+            parse_worker_event(r#"{"event":"done"}"#),
+            WorkerEvent::Done
+        ));
+        assert!(matches!(
+            parse_worker_event(r#"{"event":"error","message":"bad model"}"#),
+            WorkerEvent::Error(message) if message == "bad model"
+        ));
     }
 }
