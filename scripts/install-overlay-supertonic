@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+supertonic_version="1.3.1"
+model_revision="724fb5abbf5502583fb520898d45929e62f02c0b"
+
+data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+install_dir="${CODEX_OVERLAY_SUPERTONIC_HOME:-${data_home}/codex-webui/supertonic}"
+venv_dir="${install_dir}/venv"
+model_dir="${install_dir}/model"
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf 'uv is required to install the pinned Supertonic runtime.\n' >&2
+  exit 127
+fi
+
+mkdir -p "${install_dir}"
+uv venv --clear "${venv_dir}"
+uv pip install --python "${venv_dir}/bin/python" "supertonic==${supertonic_version}"
+
+SUPERTONIC_CACHE_DIR="${model_dir}" \
+SUPERTONIC_MODEL_REVISION="${model_revision}" \
+  "${venv_dir}/bin/supertonic" download
+
+expected_version="$("${venv_dir}/bin/supertonic" version)"
+if [[ "${expected_version}" != "supertonic ${supertonic_version}" ]]; then
+  printf 'Unexpected Supertonic runtime version: %s\n' "${expected_version}" >&2
+  exit 1
+fi
+
+checksum_file="$(mktemp)"
+trap 'rm -f -- "${checksum_file}"' EXIT
+cat >"${checksum_file}" <<'CHECKSUMS'
+c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db  onnx/duration_predictor.onnx
+c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff  onnx/text_encoder.onnx
+42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09  onnx/tts.json
+9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f  onnx/unicode_indexer.json
+883ac868ea0275ef0e991524dc64f16b3c0376efd7c320af6b53f5b780d7c61c  onnx/vector_estimator.onnx
+085de76dd8e8d5836d6ca66826601f615939218f90e519f70ee8a36ed2a4c4ba  onnx/vocoder.onnx
+45966e73316415626cf41a7d1c6f3b4c70dbc1ba2bee5c1978ef0ce33244fc8d  voice_styles/F5.json
+CHECKSUMS
+
+(cd "${model_dir}" && sha256sum --check --strict "${checksum_file}")
+
+cat >"${install_dir}/INSTALLATION" <<EOF
+supertonic=${supertonic_version}
+model=supertonic-3
+model_revision=${model_revision}
+voice=F5
+EOF
+
+printf 'Installed Supertonic %s with supertonic-3/F5 in %s\n' \
+  "${supertonic_version}" "${install_dir}"

@@ -35,21 +35,26 @@ Slot assignments persist in `$XDG_STATE_HOME/codex-webui/agent-overlay-slots.jso
 `~/.local/state/codex-webui/agent-overlay-slots.json`); set `CODEX_OVERLAY_SLOTS` to override it.
 The resident keeps running and shows an offline/stale state when WebUI is unavailable.
 
-Speech uses the local neural Piper runtime with the `pl_PL-darkman-medium` voice. Install its pinned,
-checksum-verified runtime and voice assets once (about 85 MB installed); the model itself is not kept
-in Git:
+Speech uses the CPU-only Supertonic 3 model with its Polish-capable `F5` voice. Install the pinned
+Supertonic 1.3.1 runtime and checksum-verified model revision once (about 400 MB of model assets);
+the model itself is not kept in Git:
 
 ```bash
-scripts/install-overlay-piper
+scripts/install-overlay-supertonic
 ```
 
-The default installation is `$XDG_DATA_HOME/codex-webui/piper` (or
-`~/.local/share/codex-webui/piper`). `CODEX_OVERLAY_PIPER_HOME` changes the installer destination;
-when doing so, also set `CODEX_OVERLAY_PIPER_BIN`, `CODEX_OVERLAY_PIPER_MODEL`, and
-`CODEX_OVERLAY_PIPER_CONFIG` for the resident. `CODEX_OVERLAY_AUDIO_PLAYER` defaults to
-`/usr/bin/pw-play`. Set `CODEX_OVERLAY_TTS_BACKEND=disabled` to explicitly turn speech off.
-Speech Dispatcher and eSpeak are deliberately not fallback backends: missing neural assets or audio
-playback produce an error response and silence.
+The default installation is `$XDG_DATA_HOME/codex-webui/supertonic` (or
+`~/.local/share/codex-webui/supertonic`). `CODEX_OVERLAY_SUPERTONIC_HOME` changes the installer
+destination; when doing so, also set `CODEX_OVERLAY_SUPERTONIC_PYTHON` and
+`CODEX_OVERLAY_SUPERTONIC_MODEL` for the resident. The overlay owns one long-lived synthesis worker:
+the model stays warm after the first read instead of being loaded for every shortcut. Synthesis is
+fixed to the CPU provider and Polish language; it does not consume GPU memory. A newer read cancels
+in-flight synthesis or playback and replaces it with the latest request.
+
+`CODEX_OVERLAY_AUDIO_PLAYER` defaults to `/usr/bin/pw-play`. Set
+`CODEX_OVERLAY_TTS_BACKEND=disabled` to explicitly turn speech off. Piper, Speech Dispatcher, and
+eSpeak are deliberately not fallback backends: missing neural assets, worker failures, or audio
+playback failures produce an explicit error and silence.
 
 The shared speech-only pronunciation map is [`overlay/pronunciations.json`](../overlay/pronunciations.json).
 Visible project and task labels are never changed. Personal exact-name aliases and dictionary entries
@@ -65,7 +70,7 @@ same JSON shape:
 
 Set `CODEX_OVERLAY_TTS_ALIASES` to use another personal file. Kebab case, snake case, camel case,
 and all-uppercase acronyms are normalized after exact aliases are applied. Synthesis and playback run
-off the controller thread. A newer read command cancels and replaces the previous one.
+off the controller thread.
 
 ## Start and toggle from niri
 

@@ -14,6 +14,16 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 
 Source verification: `/Applications/Codex.app/Contents/Resources/THIRD_PARTY_NOTICES.txt`, entry `lucide-react (0.456.0)`.
 
+## Supertonic
+
+The optional local agent-status speech installer downloads Supertonic 1.3.1, licensed under MIT,
+and the separately distributed Supertonic 3 model revision
+`724fb5abbf5502583fb520898d45929e62f02c0b`, licensed under the OpenRAIL-M license. Neither the
+runtime nor the model weights are included in this repository.
+
+Sources: https://github.com/supertone-inc/supertonic-py and
+https://huggingface.co/Supertone/supertonic-3
+
 ## Codex.app visual assets
 
 `public/codex-brand.js` retains the monochrome Knot path extracted from the installed Codex.app wordmark, while `public/assets/codex-app-icon*.png` and `public/assets/codex-motion/*.json` were extracted from the same local application to reproduce its brand and tool-motion presentation. These assets are distributed separately from the MIT-licensed source code and remain subject to the rights and terms of their respective owner. They may be removed or replaced if requested by the relevant rights holder.
