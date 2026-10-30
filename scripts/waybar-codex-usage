@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-const DEFAULT_ENDPOINT = "http://127.0.0.1:8899/api/account/rate-limits";
+export const DEFAULT_ENDPOINT = "http://127.0.0.1:19889/api/account/rate-limits";
 
 function humanDuration(minutes) {
   if (!Number.isFinite(minutes) || minutes <= 0) return "rolling window";

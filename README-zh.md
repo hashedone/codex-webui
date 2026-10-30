@@ -243,7 +243,7 @@ bun run test:e2e
 
 已认证的本地调用方可通过 `GET /api/account/rate-limits` 读取 Codex 账户窗口的有限、安全投影。该端点沿用现有 HTTP 认证，仅接受 `GET`，发送 `Cache-Control: no-store`；app-server 账户数据不可用时返回带 `Retry-After` 的 `503`。响应最多包含 64 个窗口，并刻意省略账户 ID、重置额度 ID、凭据及其他原始账户字段。
 
-`scripts/waybar-codex-usage` 将该响应转换为 Waybar JSON。默认端点为 `http://127.0.0.1:8899/api/account/rate-limits`；可用 `CODEX_WEBUI_RATE_LIMITS_URL` 覆盖，目标需要 Bearer 认证时可设置 `CODEX_WEBUI_ACCESS_TOKEN`。数据源依据 [Codex app-server 官方文档](https://learn.chatgpt.com/docs/app-server) 及本机 CLI 生成的实验性 TypeScript schema 实现。
+`scripts/waybar-codex-usage` 将该响应转换为 Waybar JSON。默认连接已安装的本地服务 `http://127.0.0.1:19889/api/account/rate-limits`；可用 `CODEX_WEBUI_RATE_LIMITS_URL` 覆盖（包括端口 `8899` 上的开发服务器），目标需要 Bearer 认证时可设置 `CODEX_WEBUI_ACCESS_TOKEN`。数据源依据 [Codex app-server 官方文档](https://learn.chatgpt.com/docs/app-server) 及本机 CLI 生成的实验性 TypeScript schema 实现。
 
 ## 已知限制
 

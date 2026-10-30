@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { formatRateLimits, offlineWaybarOutput } from "../scripts/waybar-codex-usage";
+import { DEFAULT_ENDPOINT, formatRateLimits, offlineWaybarOutput } from "../scripts/waybar-codex-usage";
 
 describe("Waybar Codex usage formatter", () => {
+  test("targets the installed local service by default", () => {
+    expect(DEFAULT_ENDPOINT).toBe("http://127.0.0.1:19889/api/account/rate-limits");
+  });
+
   test("selects the most-used active window and formats all windows", () => {
     const output = formatRateLimits({ limits: [
       { limitName: "Codex", windowKind: "primary", usedPercent: 71.6, windowDurationMins: 300, resetsAt: 2_000_000_000 },
