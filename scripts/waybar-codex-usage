@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 export const DEFAULT_ENDPOINT = "http://127.0.0.1:19889/api/account/rate-limits";
-const ICON_VALUE_GAP = "\u2002";
+const ICON_VALUE_GAP = '<span alpha="1">xx</span>';
 
 function humanDuration(minutes) {
   if (!Number.isFinite(minutes) || minutes <= 0) return "rolling window";
