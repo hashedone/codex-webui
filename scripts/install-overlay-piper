@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+piper_version="2023.11.14-2"
+piper_sha256="a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
+model_sha256="db505438a5364e8e2e0242c4324130a873ed660dfbe8d9689cef428ffb1b645f"
+config_sha256="70f999f11fa8ad13d3ef779041ee93c9f38be5abdbacdfad42449712fe91c81b"
+
+data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+install_dir="${CODEX_OVERLAY_PIPER_HOME:-${data_home}/codex-webui/piper}"
+download_dir="$(mktemp -d)"
+trap 'rm -rf -- "${download_dir}"' EXIT
+
+runtime_archive="${download_dir}/piper_linux_x86_64.tar.gz"
+model="${download_dir}/pl_PL-darkman-medium.onnx"
+config="${download_dir}/pl_PL-darkman-medium.onnx.json"
+
+curl --fail --silent --show-error --location \
+  "https://github.com/rhasspy/piper/releases/download/${piper_version}/piper_linux_x86_64.tar.gz" \
+  --output "${runtime_archive}"
+curl --fail --silent --show-error --location \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/pl/pl_PL/darkman/medium/pl_PL-darkman-medium.onnx" \
+  --output "${model}"
+curl --fail --silent --show-error --location \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/pl/pl_PL/darkman/medium/pl_PL-darkman-medium.onnx.json" \
+  --output "${config}"
+
+printf '%s  %s\n' "${piper_sha256}" "${runtime_archive}" | sha256sum --check --status
+printf '%s  %s\n' "${model_sha256}" "${model}" | sha256sum --check --status
+printf '%s  %s\n' "${config_sha256}" "${config}" | sha256sum --check --status
+
+mkdir -p "${download_dir}/runtime" "${install_dir}"
+tar -xzf "${runtime_archive}" -C "${download_dir}/runtime"
+cp -a "${download_dir}/runtime/piper/." "${install_dir}/"
+install -m 0644 "${model}" "${install_dir}/pl_PL-darkman-medium.onnx"
+install -m 0644 "${config}" "${install_dir}/pl_PL-darkman-medium.onnx.json"
+
+printf 'Installed Piper %s with pl_PL-darkman-medium in %s\n' "${piper_version}" "${install_dir}"

@@ -1,4 +1,5 @@
 mod model;
+mod pronunciation;
 mod render;
 mod slots;
 mod speech;
@@ -200,7 +201,11 @@ fn send_control(socket: &Path, command: &str) -> Result<(), String> {
     stream
         .read_to_string(&mut reply)
         .map_err(|error| error.to_string())?;
-    println!("{}", reply.trim());
+    let reply = reply.trim();
+    if reply.starts_with("error ") {
+        return Err(reply.to_owned());
+    }
+    println!("{reply}");
     Ok(())
 }
 

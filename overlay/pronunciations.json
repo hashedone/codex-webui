@@ -1,0 +1,19 @@
+{
+  "aliases": {
+    "Agent Presence Hub": "ejdżent prezens hab",
+    "ONI Observer": "o en i obzerwer",
+    "codex-webui": "kołdeks łeb ju aj"
+  },
+  "dictionary": {
+    "agent": "ejdżent",
+    "backend": "bekend",
+    "codex": "kołdeks",
+    "dashboard": "deszbord",
+    "frontend": "frantend",
+    "hub": "hab",
+    "observer": "obzerwer",
+    "overlay": "ołwerlej",
+    "presence": "prezens",
+    "webui": "łeb ju aj"
+  }
+}
