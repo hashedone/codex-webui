@@ -12,7 +12,7 @@ describe("Waybar Codex usage formatter", () => {
       { limitName: "Codex", windowKind: "secondary", usedPercent: 94, windowDurationMins: 10_080, resetsAt: 1_000 },
       { limitName: "Review", windowKind: "primary", usedPercent: 86, windowDurationMins: 1_440, resetsAt: 2_000_100_000 },
     ] }, 1_900_000_000);
-    expect(output.text).toBe("\u200286%");
+    expect(output.text).toBe('<span alpha="1">xx</span>86%');
     expect(output.class).toBe("warning");
     expect(output.percentage).toBe(86);
     expect(output.tooltip).toContain("Codex · primary 5h: 72% used");
@@ -23,6 +23,11 @@ describe("Waybar Codex usage formatter", () => {
   test("uses normal and critical thresholds and has a stable offline shape", () => {
     expect(formatRateLimits({ limits: [{ usedPercent: 69, windowKind: "primary" }] }).class).toBe("normal");
     expect(formatRateLimits({ limits: [{ usedPercent: 90, windowKind: "primary" }] }).class).toBe("critical");
-    expect(offlineWaybarOutput()).toEqual({ text: "\u2002--", tooltip: "Codex usage unavailable", class: "offline", percentage: 0 });
+    expect(offlineWaybarOutput()).toEqual({
+      text: '<span alpha="1">xx</span>--',
+      tooltip: "Codex usage unavailable",
+      class: "offline",
+      percentage: 0,
+    });
   });
 });
