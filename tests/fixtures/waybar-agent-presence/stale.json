@@ -1,0 +1,14 @@
+{
+  "connected": false,
+  "stale": true,
+  "error": "Codex local source delayed",
+  "tasks": [
+    {
+      "id": "last-known",
+      "title": "Last known worker",
+      "cwd": "/work/brain",
+      "status": "active",
+      "turnStatus": "inProgress"
+    }
+  ]
+}

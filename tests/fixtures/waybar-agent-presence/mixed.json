@@ -1,0 +1,64 @@
+{
+  "connected": true,
+  "stale": false,
+  "tasks": [
+    {
+      "id": "root",
+      "title": "Build dashboard",
+      "cwd": "/work/brain",
+      "status": "active",
+      "activeFlags": []
+    },
+    {
+      "id": "subagent-working",
+      "parentId": "root",
+      "title": "Inspect <API>",
+      "cwd": "/work/brain",
+      "status": "active",
+      "turnStatus": "inProgress",
+      "activeFlags": []
+    },
+    {
+      "id": "approval",
+      "parentId": "root",
+      "title": "Approve & merge",
+      "cwd": "/work/brain",
+      "status": "active",
+      "activeFlags": ["waitingOnApproval"]
+    },
+    {
+      "id": "input",
+      "title": "Choose direction",
+      "cwd": "/work/other",
+      "status": "active",
+      "activeFlags": ["waitingOnUserInput"]
+    },
+    {
+      "id": "done",
+      "title": "Fresh result",
+      "cwd": "/work/brain",
+      "status": "completed",
+      "turnStatus": "completed"
+    },
+    {
+      "id": "old-parent",
+      "title": "Old completed ancestor",
+      "cwd": "/work/brain",
+      "status": "completed",
+      "turnStatus": "completed",
+      "hierarchyContext": true
+    },
+    {
+      "id": "idle",
+      "title": "Idle thread",
+      "cwd": "/work/brain",
+      "status": "idle"
+    },
+    {
+      "id": "unknown",
+      "title": "Unknown thread",
+      "cwd": "/work/brain",
+      "status": "unknown"
+    }
+  ]
+}
