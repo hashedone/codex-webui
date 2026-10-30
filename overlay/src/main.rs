@@ -40,13 +40,20 @@ use wayland_client::{
 
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:19889/api/agents/snapshot";
 const POLL_INTERVAL: Duration = Duration::from_millis(1500);
+const OVERLAY_TOP_MARGIN: i32 = 48;
+const OVERLAY_RIGHT_MARGIN: i32 = 14;
+
+const fn overlay_margins() -> (i32, i32, i32, i32) {
+    (OVERLAY_TOP_MARGIN, OVERLAY_RIGHT_MARGIN, 0, 0)
+}
 
 fn configure_layer_surface(layer: &LayerSurface) {
+    let (top, right, bottom, left) = overlay_margins();
     layer.set_layer(Layer::Overlay);
     layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_exclusive_zone(-1);
-    layer.set_margin(24, 24, 0, 0);
+    layer.set_margin(top, right, bottom, left);
     layer.set_size(WIDTH, HEIGHT);
 }
 
@@ -576,6 +583,12 @@ smithay_client_toolkit::delegate_dispatch2!(App);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_sits_below_and_aligns_with_waybar() {
+        assert_eq!(overlay_margins(), (48, 14, 0, 0));
+    }
+
     #[test]
     fn accepts_only_explicit_loopback_http_endpoints() {
         assert!(is_loopback_endpoint(DEFAULT_ENDPOINT));
