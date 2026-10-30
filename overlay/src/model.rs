@@ -236,7 +236,7 @@ pub fn slot_summary(snapshot: &Snapshot, slots: &SlotBook, slot: u8) -> Option<S
     });
 
     let mut phrases = vec![format!(
-        "Slot {slot}. Projekt {}. Wątek {}, {}.{}",
+        "Projekt {}. Wątek {}, {}.{}",
         project_name(&root_task.cwd),
         spoken_text(&root_task.title, 100),
         spoken_status(root_task),
@@ -288,7 +288,7 @@ pub fn aggregate_summary(snapshot: &Snapshot, slots: &SlotBook) -> String {
                 .filter(|task| matches!(task.status.as_str(), "completed" | "failed" | "interrupted"))
                 .count();
             Some(format!(
-                "Slot {slot}, projekt {}, {}, {}. Subagenci: {working} pracuje, {waiting} czeka, {finished} zakończonych.",
+                "Projekt {}, {}, {}. Subagenci: {working} pracuje, {waiting} czeka, {finished} zakończonych.",
                 project_name(&root_task.cwd),
                 spoken_text(&root_task.title, 80),
                 spoken_status(root_task)
@@ -421,10 +421,11 @@ mod tests {
         slots.update(&snapshot).unwrap();
         assert_eq!(
             slot_summary(&snapshot, &slots, 2).unwrap(),
-            "Slot 2. Projekt alpha. Wątek Pierwszy, pracuje. Subagent Analiza, czeka na odpowiedź. Ostatnia aktywność: Agent odpowiada."
+            "Projekt alpha. Wątek Pierwszy, pracuje. Subagent Analiza, czeka na odpowiedź. Ostatnia aktywność: Agent odpowiada."
         );
         let all = aggregate_summary(&snapshot, &slots);
-        assert!(all.find("Slot 1").unwrap() < all.find("Slot 2").unwrap());
+        assert!(!all.contains("Slot"));
+        assert!(all.find("Drugi").unwrap() < all.find("Pierwszy").unwrap());
         assert!(all.contains("1 czeka"));
         let _ = std::fs::remove_file(path);
     }
