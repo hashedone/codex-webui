@@ -5,7 +5,7 @@ mod render;
 mod slots;
 mod speech;
 
-use model::{Snapshot, aggregate_summary, slot_summary};
+use model::{Snapshot, aggregate_summary};
 use render::{HEIGHT, Renderer, WIDTH};
 use slots::{SLOT_COUNT, SlotBook};
 use smithay_client_toolkit::{
@@ -34,7 +34,11 @@ use std::{
     },
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::mpsc::{Receiver, sync_channel},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, sync_channel},
+    },
     thread,
     time::Duration,
 };
@@ -186,6 +190,147 @@ fn is_loopback_endpoint(endpoint: &str) -> bool {
         && matches!(uri.host(), Some("127.0.0.1" | "localhost" | "[::1]"))
 }
 
+fn percent_encode_query(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn recap_endpoint(snapshot_endpoint: &str, root_id: &str) -> Result<String, String> {
+    let uri = snapshot_endpoint
+        .parse::<http::Uri>()
+        .map_err(|error| format!("invalid snapshot endpoint: {error}"))?;
+    let scheme = uri.scheme_str().ok_or("snapshot endpoint has no scheme")?;
+    let authority = uri
+        .authority()
+        .ok_or("snapshot endpoint has no authority")?;
+    let path = uri
+        .path()
+        .strip_suffix("/snapshot")
+        .ok_or("snapshot endpoint path must end in /snapshot")?;
+    Ok(format!(
+        "{scheme}://{authority}{path}/recap?rootId={}",
+        percent_encode_query(root_id)
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct RecapResponse {
+    text: String,
+}
+
+fn fetch_recap(snapshot_endpoint: &str, root_id: &str) -> Result<String, String> {
+    let endpoint = recap_endpoint(snapshot_endpoint, root_id)?;
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build();
+    let agent: ureq::Agent = config.into();
+    let body = agent
+        .get(&endpoint)
+        .call()
+        .map_err(|error| format!("recap unavailable: {error}"))?
+        .body_mut()
+        .read_to_string()
+        .map_err(|error| format!("recap body unavailable: {error}"))?;
+    let recap: RecapResponse =
+        serde_json::from_str(&body).map_err(|error| format!("invalid recap: {error}"))?;
+    let text = recap.text.trim();
+    if text.is_empty() {
+        return Err("recap was empty".to_owned());
+    }
+    Ok(text.to_owned())
+}
+
+type RecapFetcher = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+
+struct RecapRequest {
+    id: u64,
+    root_id: String,
+}
+
+struct RecapReader {
+    pending: Arc<(Mutex<Option<RecapRequest>>, Condvar)>,
+    result: Arc<Mutex<Option<(u64, Result<String, String>)>>>,
+    shutdown: Arc<AtomicBool>,
+    next_id: u64,
+    latest_id: u64,
+}
+
+impl RecapReader {
+    fn new(fetcher: RecapFetcher) -> Self {
+        let pending = Arc::new((Mutex::new(None::<RecapRequest>), Condvar::new()));
+        let result = Arc::new(Mutex::new(None));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_pending = Arc::clone(&pending);
+        let worker_result = Arc::clone(&result);
+        let worker_shutdown = Arc::clone(&shutdown);
+        thread::spawn(move || {
+            loop {
+                let request = {
+                    let (lock, ready) = &*worker_pending;
+                    let mut slot = lock.lock().unwrap_or_else(|error| error.into_inner());
+                    while slot.is_none() && !worker_shutdown.load(Ordering::Acquire) {
+                        slot = ready.wait(slot).unwrap_or_else(|error| error.into_inner());
+                    }
+                    if worker_shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    slot.take().expect("recap request must be present")
+                };
+                let response = fetcher(&request.root_id);
+                *worker_result
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some((request.id, response));
+            }
+        });
+        Self {
+            pending,
+            result,
+            shutdown,
+            next_id: 0,
+            latest_id: 0,
+        }
+    }
+
+    fn for_endpoint(endpoint: String) -> Self {
+        Self::new(Arc::new(move |root_id| fetch_recap(&endpoint, root_id)))
+    }
+
+    fn request(&mut self, root_id: String) {
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        self.latest_id = self.next_id;
+        let (slot, ready) = &*self.pending;
+        *slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(RecapRequest {
+            id: self.latest_id,
+            root_id,
+        });
+        ready.notify_one();
+    }
+
+    fn try_latest(&self) -> Option<Result<String, String>> {
+        let (request_id, result) = self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()?;
+        (request_id == self.latest_id).then_some(result)
+    }
+}
+
+impl Drop for RecapReader {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        self.pending.1.notify_one();
+    }
+}
+
 fn send_control(socket: &Path, command: &str) -> Result<(), String> {
     let mut stream = UnixStream::connect(socket)
         .map_err(|error| format!("overlay is not running at {}: {error}", socket.display()))?;
@@ -293,8 +438,9 @@ fn main() -> ExitCode {
 fn run(options: Options) -> Result<(), String> {
     let listener = bind_control(&options.socket)?;
     let _guard = SocketGuard(options.socket.clone());
-    let receiver = snapshot_worker(options.endpoint);
+    let receiver = snapshot_worker(options.endpoint.clone());
     let slots = SlotBook::load(options.slots);
+    let recap_reader = RecapReader::for_endpoint(options.endpoint);
     let speaker = Speaker::from_environment();
     let renderer = Renderer::load()?;
     let conn = Connection::connect_to_env()
@@ -340,6 +486,7 @@ fn run(options: Options) -> Result<(), String> {
         redraw: true,
         slots,
         speaker,
+        recap_reader,
     };
     let mut event_loop: EventLoop<App> = EventLoop::try_new().map_err(|error| error.to_string())?;
     WaylandSource::new(conn, event_queue)
@@ -371,6 +518,7 @@ struct App {
     redraw: bool,
     slots: SlotBook,
     speaker: Speaker,
+    recap_reader: RecapReader,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -465,6 +613,16 @@ impl App {
             }
             self.redraw = true;
         }
+        if let Some(result) = self.recap_reader.try_latest() {
+            match result {
+                Ok(summary) => {
+                    if let Err(error) = self.speaker.speak(summary) {
+                        eprintln!("codex-agent-overlay: {error}");
+                    }
+                }
+                Err(error) => eprintln!("codex-agent-overlay: {error}"),
+            }
+        }
         loop {
             let Ok((mut stream, _)) = self.listener.accept() else {
                 break;
@@ -499,17 +657,15 @@ impl App {
         }
     }
 
-    fn read_slot(&self, slot: u8) -> String {
-        let Some(snapshot) = self.snapshot.as_ref() else {
+    fn read_slot(&mut self, slot: u8) -> String {
+        if self.snapshot.is_none() {
             return "error snapshot-unavailable\n".to_owned();
-        };
-        let Some(summary) = slot_summary(snapshot, &self.slots, slot) else {
+        }
+        let Some(root_id) = self.slots.root_for(slot).map(str::to_owned) else {
             return format!("error empty-slot {slot}\n");
         };
-        match self.speaker.speak(summary) {
-            Ok(()) => format!("ok speaking-slot {slot}\n"),
-            Err(error) => format!("error {error}\n"),
-        }
+        self.recap_reader.request(root_id);
+        format!("ok fetching-slot {slot}\n")
     }
 
     fn read_summary(&self) -> String {
@@ -681,6 +837,7 @@ smithay_client_toolkit::delegate_dispatch2!(App);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn overlay_sits_below_and_aligns_with_waybar() {
@@ -701,6 +858,120 @@ mod tests {
         ));
         assert!(!is_loopback_endpoint("http://127.0.0.1.example.test:80/x"));
         assert!(!is_loopback_endpoint("http://127.0.0.1:80@evil.test/x"));
+    }
+
+    #[test]
+    fn derives_a_source_qualified_recap_endpoint_from_the_snapshot_endpoint() {
+        assert_eq!(
+            recap_endpoint(
+                "http://127.0.0.1:19889/api/agents/snapshot",
+                "codex-local:root/child"
+            )
+            .unwrap(),
+            "http://127.0.0.1:19889/api/agents/recap?rootId=codex-local%3Aroot%2Fchild"
+        );
+    }
+
+    #[test]
+    fn fetches_the_server_generated_spoken_recap_on_demand() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let size = stream.read(&mut request).unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..size])
+                    .starts_with("GET /api/agents/recap?rootId=webui%3Aroot HTTP/1.1")
+            );
+            let body = r#"{"text":"Semantic recap."}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+
+        let text = fetch_recap(
+            &format!("http://{address}/api/agents/snapshot"),
+            "webui:root",
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(text, "Semantic recap.");
+    }
+
+    #[test]
+    fn recap_requests_return_immediately_and_only_publish_the_latest_result() {
+        let fetcher = std::sync::Arc::new(|root_id: &str| {
+            if root_id == "slow" {
+                std::thread::sleep(Duration::from_millis(180));
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(format!("{root_id} recap"))
+        });
+        let mut reader = RecapReader::new(fetcher);
+
+        let started = std::time::Instant::now();
+        reader.request("slow".to_owned());
+        assert!(started.elapsed() < Duration::from_millis(40));
+        reader.request("fast".to_owned());
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let latest = loop {
+            if let Some(result) = reader.try_latest() {
+                break result.unwrap();
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(latest, "fast recap");
+        std::thread::sleep(Duration::from_millis(220));
+        assert!(reader.try_latest().is_none());
+    }
+
+    #[test]
+    fn recap_reader_coalesces_a_burst_to_one_newest_pending_request() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded_calls = Arc::clone(&calls);
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let release_receiver = Arc::new(std::sync::Mutex::new(release_receiver));
+        let worker_release = Arc::clone(&release_receiver);
+        let fetcher = Arc::new(move |root_id: &str| {
+            recorded_calls.lock().unwrap().push(root_id.to_owned());
+            if root_id == "slow" {
+                started_sender.send(()).unwrap();
+                worker_release.lock().unwrap().recv().unwrap();
+            }
+            Ok(format!("{root_id} recap"))
+        });
+        let mut reader = RecapReader::new(fetcher);
+
+        reader.request("slow".to_owned());
+        started_receiver
+            .recv_timeout(Duration::from_millis(200))
+            .unwrap();
+        for index in 0..50 {
+            reader.request(format!("pending-{index}"));
+        }
+        release_sender.send(()).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let latest = loop {
+            if let Some(result) = reader.try_latest() {
+                break result.unwrap();
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(latest, "pending-49 recap");
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &["slow".to_owned(), "pending-49".to_owned()]
+        );
     }
 
     #[test]

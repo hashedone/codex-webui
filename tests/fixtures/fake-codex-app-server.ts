@@ -62,6 +62,14 @@ createInterface({ input: process.stdin }).on("line", line => {
     send({ id: message.id, result: { thread: threads.get(message.params.threadId) } });
     return;
   }
+  if (message.method === "thread/turns/list") {
+    const text = message.params.threadId === "thread-alpha" ? "Alpha fixture result."
+      : message.params.threadId === "thread-internal" ? "Idle descendant fixture result."
+      : message.params.threadId === "desktop-child" ? "Desktop descendant fixture result."
+        : "Fixture result.";
+    send({ id: message.id, result: { data: [{ id: `completed-${message.params.threadId}`, status: "completed", itemsView: message.params.itemsView || "summary", items: [{ id: `answer-${message.params.threadId}`, type: "agentMessage", phase: "final_answer", text }] }], nextCursor: null } });
+    return;
+  }
   if (message.method === "turn/start") {
     const { threadId } = message.params;
     if (process.env.CODEX_WEBUI_TEST_AGENTS === "1") {
