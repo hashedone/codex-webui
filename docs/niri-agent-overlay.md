@@ -56,6 +56,17 @@ in-flight synthesis or playback and replaces it with the latest request.
 eSpeak are deliberately not fallback backends: missing neural assets, worker failures, or audio
 playback failures produce an explicit error and silence.
 
+While the agent speaks, the overlay uses PipeWire's Pulse-compatible `pactl` interface to reduce
+each already-active playback stream to 18% of its previous per-channel volume. The agent's new
+`pw-play` stream is not changed, and sink/master and input/source volumes are never touched. Exact
+stream volumes are reached through a short 160 ms fade and restored through the same smooth fade
+after playback, replacement, cancellation, errors, or shutdown. Replacement speech keeps the
+existing attenuation instead of fading up between utterances. The
+recovery snapshot in `$XDG_RUNTIME_DIR/codex-agent-overlay-audio.json` is also restored on the next
+start if the resident was killed unexpectedly. Set `CODEX_OVERLAY_AUDIO_DUCK_FRACTION` to a value
+from `0` through `1`, or set `CODEX_OVERLAY_AUDIO_DUCKING=disabled` for troubleshooting. Disabled
+mode still restores a stale recovery snapshot before leaving subsequent streams unchanged.
+
 The shared speech-only pronunciation map is [`overlay/pronunciations.json`](../overlay/pronunciations.json).
 Visible project and task labels are never changed. Personal exact-name aliases and dictionary entries
 can be added in `~/.config/codex-webui/spoken-names.json`; they override shared entries and use the
