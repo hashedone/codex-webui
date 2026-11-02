@@ -181,85 +181,6 @@ fn spoken_text(value: &str, limit: usize) -> String {
     shortened
 }
 
-fn activity_phrase(task: &Task) -> Option<String> {
-    let label = task.last_activity.as_ref()?.label.trim();
-    if label.is_empty() || label == "Thread updated (server timestamp)" {
-        None
-    } else {
-        let translated = match label {
-            "Task created" => "Utworzono zadanie",
-            "Turn started" => "Rozpoczęto turę",
-            "Turn completed" | "Turn finished" => "Tura zakończona",
-            "Turn failed" => "Tura zakończona błędem",
-            "Turn interrupted" => "Tura przerwana",
-            "Turn in progress" => "Tura w toku",
-            "Activity started" => "Rozpoczęto działanie",
-            "Activity finished" => "Zakończono działanie",
-            "Agent responding" => "Agent odpowiada",
-            "Status changed" => "Stan zmieniony",
-            "Task unloaded" => "Zadanie wyładowane",
-            "Task renamed" => "Zmieniono nazwę zadania",
-            _ => label,
-        };
-        Some(format!(
-            " Ostatnia aktywność: {}.",
-            spoken_text(translated, 60)
-        ))
-    }
-}
-
-pub fn slot_summary(snapshot: &Snapshot, slots: &SlotBook, slot: u8) -> Option<String> {
-    if !(1..=SLOT_COUNT).contains(&slot) {
-        return None;
-    }
-    let root = slots.root_for(slot)?;
-    let by_id: HashMap<&str, &Task> = snapshot
-        .tasks
-        .iter()
-        .map(|task| (task.id.as_str(), task))
-        .collect();
-    let root_task = by_id.get(root)?;
-    let mut tasks: Vec<&Task> = snapshot
-        .tasks
-        .iter()
-        .filter(|task| root_id(task, &by_id) == root)
-        .collect();
-    tasks.sort_by_key(|task| {
-        (
-            depth(task, &by_id),
-            snapshot
-                .tasks
-                .iter()
-                .position(|item| item.id == task.id)
-                .unwrap_or(usize::MAX),
-        )
-    });
-
-    let mut phrases = vec![format!(
-        "Projekt {}. Wątek {}, {}.{}",
-        project_name(&root_task.cwd),
-        spoken_text(&root_task.title, 100),
-        spoken_status(root_task),
-        activity_phrase(root_task).unwrap_or_default()
-    )];
-    let descendants: Vec<&Task> = tasks.into_iter().filter(|task| task.id != root).collect();
-    for task in descendants.iter().take(8) {
-        phrases.push(format!(
-            "Subagent {}, {}.{}",
-            spoken_text(&task.title, 100),
-            spoken_status(task),
-            activity_phrase(task).unwrap_or_default()
-        ));
-    }
-    if descendants.len() > 8 {
-        phrases.push(format!(
-            "Oraz {} dalszych subagentów.",
-            descendants.len() - 8
-        ));
-    }
-    Some(phrases.join(" "))
-}
-
 pub fn aggregate_summary(snapshot: &Snapshot, slots: &SlotBook) -> String {
     let by_id: HashMap<&str, &Task> = snapshot
         .tasks
@@ -385,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn summaries_follow_slot_order_and_include_descendants() {
+    fn aggregate_summaries_follow_slot_order_and_include_descendant_counts() {
         let snapshot = Snapshot {
             tasks: vec![
                 Task {
@@ -419,10 +340,6 @@ mod tests {
         let path = std::env::temp_dir().join("codex-overlay-summary-test.json");
         let mut slots = SlotBook::load(path.clone());
         slots.update(&snapshot).unwrap();
-        assert_eq!(
-            slot_summary(&snapshot, &slots, 2).unwrap(),
-            "Projekt alpha. Wątek Pierwszy, pracuje. Subagent Analiza, czeka na odpowiedź. Ostatnia aktywność: Agent odpowiada."
-        );
         let all = aggregate_summary(&snapshot, &slots);
         assert!(!all.contains("Slot"));
         assert!(all.find("Drugi").unwrap() < all.find("Pierwszy").unwrap());

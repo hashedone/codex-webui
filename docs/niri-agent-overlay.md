@@ -111,8 +111,20 @@ If a `binds` block already exists, add only these entries to it. Do not add a se
 keyboard-shortcuts inhibitor. Change the key chord if it conflicts with an existing binding.
 
 `spawn-at-startup` starts the resident hidden on the next niri session; `Mod+A` reveals it on demand.
-`Mod+1` through `Mod+9` read the matching root and visible descendants. `Mod+S` reads a compact
-summary of every occupied slot in numeric order. Status or snapshot-order changes never move a
+`Mod+1` through `Mod+9` read the newest completed final answer from the matching root and its
+completed descendants, so an unpulled subagent result is audible. Active roots identify an older
+answer as a previous result; when no completed answer exists, speech says so instead of reading
+lifecycle metadata. Recaps use Codex's bounded turn-summary protocol without another model call,
+strip presentation markup, reserve room for descendant results, and cap spoken text. History reads
+are asynchronous, bounded to six descendants with at most four concurrent requests, and use one
+resident recap worker with at most one fetch in flight plus one coalesced newest pending slot. The
+server abandons recap assembly after four seconds or when the overlay disconnects; cancellation
+also removes the corresponding pending app-server request immediately. An app-server response that
+was already in transport can still arrive later and is ignored. Historical responses that do not
+expose `phase: final_answer` intentionally produce the
+explicit no-recap fallback rather than risking commentary, reasoning, user, or tool text leakage.
+`Mod+S` reads a compact status summary of every
+occupied slot in numeric order. Status or snapshot-order changes never move a
 thread, and assignments survive overlay restarts. A new root takes the lowest unused slot; only when
 all nine are reserved may the oldest absent root's slot be reused.
 After editing the config, validate it before reloading:

@@ -17,6 +17,8 @@ import { resolveLocalImage } from "./image-service.js";
 import { AgentOverview } from "./agent-overview.js";
 import { LocalCodexPresence } from "./local-presence.js";
 import { PresenceHub } from "./presence-hub.js";
+import { buildAgentRecap } from "./agent-recap.js";
+import { CodexRequestBridge, abortOnHttpDisconnect } from "./codex-request.js";
 import { LiveSessionStore } from "./live-session-service.js";
 import { createRateLimitLoader } from "./rate-limit-service.js";
 import {
@@ -58,6 +60,7 @@ const browseRoots = defaultBrowseRoots(homeDir);
 const imageRoots = [...new Set([...browseRoots, resolve(tmpdir()), resolve("/tmp")])];
 const fileRoots = [...new Set([...browseRoots, defaultCwd, resolve(tmpdir()), resolve("/tmp")])];
 const reviewRoots = [resolve(process.env.CODEX_WEBUI_REVIEW_ROOT || defaultCwd)];
+const AGENT_RECAP_DEADLINE_MS = 4_000;
 const clients = new Set<WebSocket>();
 type RequestId = string | number;
 type BrowserConnection = WebSocket | ServerResponse;
@@ -68,8 +71,8 @@ const sseClients = new Set<ServerResponse>();
 const sseClientsById = new Map<string, ServerResponse>();
 const sseClientThreads = new Map<ServerResponse, ThreadSubscription>();
 const terminalSessions = new Map<WebSocket, ReturnType<typeof createTerminalSession>>();
-const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
 const pendingCodexRequests = new Map<RequestId, PendingCodexRequest>();
+const codexRequests = new CodexRequestBridge(message => sendRaw(message));
 const reviewDiffs = new ReviewDiffStore();
 const liveSessions = new LiveSessionStore();
 const agentOverview = new AgentOverview(request);
@@ -130,8 +133,7 @@ function startCodex() {
     rateLimitLoader.invalidate();
     reviewDiffs.clear();
     broadcast({ type: "bridge/status", status: "disconnected", code, signal });
-    for (const item of pending.values()) item.reject(new Error("Codex app-server exited"));
-    pending.clear();
+    codexRequests.rejectAll(new Error("Codex app-server exited"));
     pendingCodexRequests.clear();
     if (codex === child) codex = null;
     if (shuttingDown) maybeFinishShutdown();
@@ -163,19 +165,9 @@ function sendRaw(message: any) {
   codex!.stdin.write(JSON.stringify(message) + "\n");
 }
 
-function request(method: string, params: any = {}) {
+function request(method: string, params: any = {}, options: { signal?: AbortSignal } = {}) {
   const id = seq++;
-  sendRaw({ id, method, params });
-  return new Promise<any>((resolvePromise, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`Codex request timed out: ${method}`));
-    }, 30000);
-    pending.set(id, {
-      resolve: (value) => { clearTimeout(timer); resolvePromise(value); },
-      reject: (error) => { clearTimeout(timer); reject(error); },
-    });
-  });
+  return codexRequests.request(id, method, params, options);
 }
 
 async function initialize() {
@@ -197,15 +189,7 @@ async function initialize() {
 }
 
 function handleCodex(message: any) {
-  if (message.id !== undefined && ("result" in message || "error" in message)) {
-    const item = pending.get(Number(message.id));
-    if (item) {
-      pending.delete(Number(message.id));
-      if (message.error) item.reject(new Error(message.error.message || JSON.stringify(message.error)));
-      else item.resolve(message.result);
-      return;
-    }
-  }
+  if (codexRequests.handleResponse(message)) return;
   if (message.id !== undefined && message.method) {
     const recipients = recipientsForCodexRequest(message.params?.threadId);
     pendingCodexRequests.set(message.id, { message, recipients });
@@ -639,6 +623,65 @@ const server = createServer(async (req, res) => {
     }
     return;
   }
+  if (url.pathname === "/api/agents/recap") {
+    if (req.method !== "GET") {
+      res.writeHead(405, {
+        "content-type": "application/json; charset=utf-8",
+        allow: "GET",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({ error: { code: "method_not_allowed", message: "Method not allowed" } }));
+      return;
+    }
+    const rootId = url.searchParams.get("rootId");
+    if (!rootId || rootId.length > 512) {
+      res.writeHead(400, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({ error: { code: "invalid_root", message: "A valid agent root is required" } }));
+      return;
+    }
+    const recapController = new AbortController();
+    const detachDisconnect = abortOnHttpDisconnect(req, res, recapController);
+    const recapDeadline = setTimeout(
+      () => recapController.abort(new Error("Agent recap deadline exceeded")),
+      AGENT_RECAP_DEADLINE_MS,
+    );
+    try {
+      const snapshot = await presenceHub.read(connected);
+      const recap = await buildAgentRecap({
+        rootId,
+        tasks: snapshot.tasks,
+        readTurns: params => request("thread/turns/list", params, { signal: recapController.signal }),
+        signal: recapController.signal,
+      });
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "cross-origin-resource-policy": "same-origin",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify(recap));
+    } catch (error) {
+      const missing = error instanceof Error && error.message === "Agent recap root is unavailable";
+      console.warn("[codex-webui] agent recap request failed:", error instanceof Error ? error.message : String(error));
+      if (!res.destroyed) {
+        res.writeHead(missing ? 404 : 503, {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        });
+        res.end(JSON.stringify({ error: { code: missing ? "agent_not_found" : "recap_unavailable", message: missing ? "Agent root not found" : "Agent recap is unavailable" } }));
+      }
+    } finally {
+      clearTimeout(recapDeadline);
+      detachDisconnect();
+    }
+    return;
+  }
   if (url.pathname === "/api/account/rate-limits") {
     if (req.method !== "GET") {
       res.writeHead(405, {
@@ -1013,8 +1056,7 @@ function shutdown() {
   if (restartTimer) clearTimeout(restartTimer);
   restartTimer = null;
   clearInterval(sseKeepalive);
-  for (const item of pending.values()) item.reject(new Error("Codex WebUI is shutting down"));
-  pending.clear();
+  codexRequests.rejectAll(new Error("Codex WebUI is shutting down"));
   for (const client of clients) client.terminate();
   clients.clear();
   for (const client of sseClients) client.end();
