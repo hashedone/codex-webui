@@ -1,3 +1,4 @@
+mod audio;
 mod model;
 mod pronunciation;
 mod render;

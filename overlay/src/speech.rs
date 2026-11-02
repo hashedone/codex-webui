@@ -1,4 +1,4 @@
-use crate::pronunciation::Pronouncer;
+use crate::{audio::ducking_from_environment, pronunciation::Pronouncer};
 use serde_json::{Value, json};
 use std::{
     env, fs,
@@ -86,6 +86,13 @@ fn speech_worker(backend: Backend, receiver: Receiver<String>) {
     let mut synthesizer = None;
     let mut queued = None;
     let audio = audio_path(&backend);
+    let mut ducking = match ducking_from_environment() {
+        Ok(ducking) => Some(ducking),
+        Err(error) => {
+            eprintln!("codex-agent-overlay: audio ducking unavailable: {error}");
+            None
+        }
+    };
 
     loop {
         let mut text = match queued.take() {
@@ -103,6 +110,7 @@ fn speech_worker(backend: Backend, receiver: Receiver<String>) {
                 Ok(process) => synthesizer = Some(process),
                 Err(error) => {
                     eprintln!("codex-agent-overlay: Supertonic failed to start: {error}");
+                    restore_after_error(&mut ducking);
                     continue;
                 }
             }
@@ -114,6 +122,7 @@ fn speech_worker(backend: Backend, receiver: Receiver<String>) {
             if let Err(error) = ready {
                 eprintln!("codex-agent-overlay: Supertonic unavailable: {error}");
                 synthesizer = None;
+                restore_after_error(&mut ducking);
                 continue;
             }
         }
@@ -128,6 +137,7 @@ fn speech_worker(backend: Backend, receiver: Receiver<String>) {
         if let Err(error) = request {
             eprintln!("codex-agent-overlay: Supertonic request failed: {error}");
             synthesizer = None;
+            restore_after_error(&mut ducking);
             continue;
         }
 
@@ -151,20 +161,39 @@ fn speech_worker(backend: Backend, receiver: Receiver<String>) {
                 .and_then(|process| process.events.try_recv().ok());
             match event {
                 Some(WorkerEvent::Done) => {
+                    if let Some(ducking) = ducking.as_mut()
+                        && let Err(error) = ducking.before_playback()
+                    {
+                        eprintln!("codex-agent-overlay: audio ducking failed: {error}");
+                        if let Err(error) = ducking.error() {
+                            eprintln!("codex-agent-overlay: audio restoration failed: {error}");
+                        }
+                    }
                     let mut playback = match start_player(&backend, audio.as_deref().unwrap()) {
                         Ok(child) => Some(child),
                         Err(error) => {
                             eprintln!("codex-agent-overlay: audio playback failed: {error}");
+                            restore_after_error(&mut ducking);
                             cleanup(audio.as_deref());
                             break;
                         }
                     };
                     queued = wait_for_playback(&receiver, &mut playback, audio.as_deref());
+                    if queued.is_some() {
+                        if let Some(ducking) = ducking.as_mut() {
+                            ducking.replacement();
+                        }
+                    } else if let Some(ducking) = ducking.as_mut()
+                        && let Err(error) = ducking.finish()
+                    {
+                        eprintln!("codex-agent-overlay: audio restoration failed: {error}");
+                    }
                     break;
                 }
                 Some(WorkerEvent::Error(error)) => {
                     eprintln!("codex-agent-overlay: Supertonic synthesis failed: {error}");
                     synthesizer = None;
+                    restore_after_error(&mut ducking);
                     cleanup(audio.as_deref());
                     break;
                 }
@@ -177,12 +206,23 @@ fn speech_worker(backend: Backend, receiver: Receiver<String>) {
                             "codex-agent-overlay: Supertonic worker exited; speech remains silent"
                         );
                         synthesizer = None;
+                        restore_after_error(&mut ducking);
                         cleanup(audio.as_deref());
                         break;
                     }
                 }
             }
         }
+    }
+}
+
+fn restore_after_error<C: crate::audio::AudioControl>(
+    ducking: &mut Option<crate::audio::SpeechDucking<C>>,
+) {
+    if let Some(ducking) = ducking.as_mut()
+        && let Err(error) = ducking.error()
+    {
+        eprintln!("codex-agent-overlay: audio restoration failed: {error}");
     }
 }
 
